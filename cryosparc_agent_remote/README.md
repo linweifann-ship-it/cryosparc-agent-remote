@@ -180,8 +180,8 @@ Inputs:
 Behavior:
 
 - If validation fails, returns `execution_mode="validation_failed"`.
-- If validation succeeds and `dry_run=true`, returns `planned_actions` and does
-  not create jobs.
+- If validation succeeds and `dry_run=true`, returns an `execution_plan` and
+  compatibility field `planned_actions`; it does not create jobs.
 - If `dry_run=false`, returns `live_execution_not_implemented` until human
   approval policy and job wrappers are added.
 
@@ -193,21 +193,40 @@ Example dry-run result:
   "dry_run": true,
   "execution_mode": "dry_run",
   "decision_type": "forward",
+  "execution_plan": {
+    "plan_id": "plan_xxx",
+    "plan_version": "1.0",
+    "status": "planned",
+    "dry_run_only": true,
+    "decision_type": "forward",
+    "state_snapshot_id": "state_xxx",
+    "candidate_set_id": "candidates_xxx",
+    "action_count": 1,
+    "approval_required": false,
+    "approval_reasons": [],
+    "actions": [
+      {
+        "plan_step": 1,
+        "action_id": "forward_J8",
+        "action_type": "forward",
+        "workflow_node_id": "node_extract_micrographs_multi_001",
+        "job_type": "extract_micrographs_multi",
+        "execution_mode": "dry_run_only",
+        "mcp_tool_name": null,
+        "approval_required": false,
+        "approval_reasons": [],
+        "resolved_parameters": {
+          "compute_num_gpus": 4,
+          "box_size_pix": 400
+        },
+        "rollback_target": null,
+        "status": "planned"
+      }
+    ],
+    "execution_results": []
+  },
   "planned_actions": [
-    {
-      "plan_step": 1,
-      "action_id": "forward_J8",
-      "action_type": "forward",
-      "workflow_node_id": "node_extract_micrographs_multi_001",
-      "job_type": "extract_micrographs_multi",
-      "execution_mode": "dry_run_only",
-      "resolved_parameters": {
-        "compute_num_gpus": 4,
-        "box_size_pix": 400
-      },
-      "mcp_tool_name": null,
-      "status": "planned"
-    }
+    "same as execution_plan.actions"
   ],
   "message": "Dry run only; no CryoSPARC jobs were created or queued."
 }
@@ -310,7 +329,8 @@ cd /ssd1/linweifan/cryosparc_agent
 ## `execute_model_decision` 当前行为
 
 - 校验失败：返回 `execution_mode="validation_failed"`。
-- 校验通过且 `dry_run=true`：返回 `planned_actions`，不创建 Job。
+- 校验通过且 `dry_run=true`：返回 `execution_plan` 和兼容字段
+  `planned_actions`，不创建 Job。
 - `dry_run=false`：返回 `live_execution_not_implemented`，因为真实执行还需要先接入
   Human Approval 和更多 Job Wrapper。
 

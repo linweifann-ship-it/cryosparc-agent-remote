@@ -277,13 +277,14 @@ def execute_model_decision_payload(
             "execution_mode": "validation_failed",
             "decision_type": validation.get("decision_type"),
             "validation": validation,
+            "execution_plan": None,
             "planned_actions": [],
             "execution_results": [],
             "issues": validation["issues"],
             "warnings": validation["warnings"],
         }
 
-    planned_actions = build_execution_plan(payload, validation)
+    execution_plan = build_execution_plan(payload, validation)
     if dry_run:
         return {
             "success": True,
@@ -291,7 +292,8 @@ def execute_model_decision_payload(
             "execution_mode": "dry_run",
             "decision_type": validation["decision_type"],
             "validation": validation,
-            "planned_actions": planned_actions,
+            "execution_plan": execution_plan,
+            "planned_actions": execution_plan["actions"],
             "execution_results": [],
             "issues": [],
             "warnings": validation["warnings"],
@@ -304,7 +306,8 @@ def execute_model_decision_payload(
         "execution_mode": "live_execution_not_implemented",
         "decision_type": validation["decision_type"],
         "validation": validation,
-        "planned_actions": planned_actions,
+        "execution_plan": execution_plan,
+        "planned_actions": execution_plan["actions"],
         "execution_results": [],
         "issues": [
             {
@@ -324,12 +327,12 @@ def execute_model_decision_payload(
 def build_execution_plan(
     payload: dict[str, Any],
     validation: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Normalize validated decisions into planned execution steps."""
+) -> dict[str, Any]:
+    """Normalize validated decisions into a future execution-ready plan."""
     decision_type = validation["decision_type"]
 
     if decision_type in {"forward", "branch"}:
-        return [
+        actions = [
             {
                 "plan_step": idx + 1,
                 "action_id": action["action_id"],
@@ -337,35 +340,101 @@ def build_execution_plan(
                 "workflow_node_id": action["workflow_node_id"],
                 "job_type": action["job_type"],
                 "execution_mode": action["execution_mode"],
-                "resolved_parameters": action["resolved_parameters"],
                 "mcp_tool_name": action["mcp_tool_name"],
+                "approval_required": decision_type == "branch",
+                "approval_reasons": (
+                    ["branch_decision"]
+                    if decision_type == "branch"
+                    else []
+                ),
+                "resolved_parameters": action["resolved_parameters"],
+                "rollback_target": None,
                 "status": "planned",
             }
             for idx, action in enumerate(validation["resolved_actions"])
         ]
+        return make_execution_plan(payload, validation, actions)
 
     if decision_type == "rollback":
-        return [
+        rollback_target = payload.get("rollback_target")
+        actions = [
             {
                 "plan_step": 1,
+                "action_id": None,
                 "action_type": "rollback",
+                "workflow_node_id": (
+                    rollback_target or {}
+                ).get("workflow_node_id"),
+                "job_type": (rollback_target or {}).get("job_type"),
+                "execution_mode": "dry_run_only",
+                "mcp_tool_name": None,
+                "approval_required": True,
+                "approval_reasons": ["rollback_decision"],
+                "resolved_parameters": {},
                 "rollback_target": payload.get("rollback_target"),
                 "status": "planned",
-                "execution_mode": "dry_run_only",
             }
         ]
+        return make_execution_plan(payload, validation, actions)
 
     if decision_type == "stop":
-        return [
+        actions = [
             {
                 "plan_step": 1,
+                "action_id": None,
                 "action_type": "stop",
-                "status": "planned",
+                "workflow_node_id": None,
+                "job_type": None,
                 "execution_mode": "dry_run_only",
+                "mcp_tool_name": None,
+                "approval_required": False,
+                "approval_reasons": [],
+                "resolved_parameters": {},
+                "rollback_target": None,
+                "status": "planned",
             }
         ]
+        return make_execution_plan(payload, validation, actions)
 
-    return []
+    return make_execution_plan(payload, validation, [])
+
+
+def make_execution_plan(
+    payload: dict[str, Any],
+    validation: dict[str, Any],
+    actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the stable top-level ExecutionPlan object."""
+    approval_reasons = sorted(
+        {
+            reason
+            for action in actions
+            for reason in action["approval_reasons"]
+        }
+    )
+    plan_payload = {
+        "decision_type": validation["decision_type"],
+        "state_snapshot_id": payload.get("state_snapshot_id"),
+        "candidate_set_id": payload.get("candidate_set_id"),
+        "actions": actions,
+    }
+    return {
+        "plan_id": content_hash("plan", plan_payload),
+        "plan_version": "1.0",
+        "status": "planned",
+        "dry_run_only": True,
+        "decision_type": validation["decision_type"],
+        "state_snapshot_id": payload.get("state_snapshot_id"),
+        "candidate_set_id": payload.get("candidate_set_id"),
+        "action_count": len(actions),
+        "approval_required": any(
+            action["approval_required"]
+            for action in actions
+        ),
+        "approval_reasons": approval_reasons,
+        "actions": actions,
+        "execution_results": [],
+    }
 
 
 def validate_context_ids(
