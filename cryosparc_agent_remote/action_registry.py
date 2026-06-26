@@ -9,43 +9,12 @@ from schemas import (
     ValidationResult,
     parse_model_decision,
 )
+from job_executor import plan_job_action
+from job_specs import get_parameter_template
 from workflow_state import content_hash, extract_workflow_state, find_node
 
 
 REGISTRY_VERSION = "workflow_v1"
-
-# Allowed parameter shapes for job types the model may currently select.
-PARAMETER_TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
-    "import_micrographs": {
-        "blob_paths": {"type": "string", "required": True},
-        "psize_A": {"type": "number", "minimum": 0},
-        "accel_kv": {"type": "number", "minimum": 0},
-    },
-    "patch_ctf_estimation_multi": {
-        "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
-        "df_search_min": {"type": "number", "minimum": 0},
-        "df_search_max": {"type": "number", "minimum": 0},
-    },
-    "template_picker_gpu": {
-        "diameter": {"type": "number", "minimum": 0},
-        "min_distance": {"type": "number", "minimum": 0},
-        "use_ctf": {"type": "boolean"},
-    },
-    "extract_micrographs_multi": {
-        "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
-        "box_size_pix": {"type": "integer", "minimum": 32},
-    },
-    "class_2D_new": {
-        "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
-        "class2D_K": {"type": "integer", "minimum": 2},
-    },
-    "homo_refine_new": {
-        "refine_symmetry": {"type": "string"},
-        "refine_defocus_refine": {"type": "boolean"},
-        "refine_ctf_global_refine": {"type": "boolean"},
-    },
-}
-
 
 def get_candidate_actions(
     project_uid: str,
@@ -202,13 +171,7 @@ def build_parameter_template(
     target_node: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     """Combine static parameter rules with defaults copied from the reference job."""
-    template = {
-        name: dict(spec)
-        for name, spec in PARAMETER_TEMPLATES.get(
-            target_node["job_type"],
-            {},
-        ).items()
-    }
+    template = get_parameter_template(target_node["job_type"])
     for name, value in target_node["key_parameters"].items():
         template.setdefault(name, {"type": infer_json_type(value)})
         template[name]["default"] = value
@@ -278,13 +241,12 @@ def execute_model_decision_payload(
             "decision_type": validation.get("decision_type"),
             "validation": validation,
             "execution_plan": None,
-            "planned_actions": [],
             "execution_results": [],
             "issues": validation["issues"],
             "warnings": validation["warnings"],
         }
 
-    execution_plan = build_execution_plan(payload, validation)
+    execution_plan = build_execution_plan(payload, validation, candidate_actions)
     if dry_run:
         return {
             "success": True,
@@ -293,7 +255,6 @@ def execute_model_decision_payload(
             "decision_type": validation["decision_type"],
             "validation": validation,
             "execution_plan": execution_plan,
-            "planned_actions": execution_plan["actions"],
             "execution_results": [],
             "issues": [],
             "warnings": validation["warnings"],
@@ -307,7 +268,6 @@ def execute_model_decision_payload(
         "decision_type": validation["decision_type"],
         "validation": validation,
         "execution_plan": execution_plan,
-        "planned_actions": execution_plan["actions"],
         "execution_results": [],
         "issues": [
             {
@@ -327,13 +287,19 @@ def execute_model_decision_payload(
 def build_execution_plan(
     payload: dict[str, Any],
     validation: dict[str, Any],
+    candidate_actions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize validated decisions into a future execution-ready plan."""
     decision_type = validation["decision_type"]
+    candidates_by_id = {
+        action["action_id"]: action
+        for action in candidate_actions or []
+    }
 
     if decision_type in {"forward", "branch"}:
-        actions = [
-            {
+        actions = []
+        for idx, action in enumerate(validation["resolved_actions"]):
+            base_action = {
                 "plan_step": idx + 1,
                 "action_id": action["action_id"],
                 "action_type": action["action_type"],
@@ -341,18 +307,18 @@ def build_execution_plan(
                 "job_type": action["job_type"],
                 "execution_mode": action["execution_mode"],
                 "mcp_tool_name": action["mcp_tool_name"],
-                "approval_required": decision_type == "branch",
-                "approval_reasons": (
-                    ["branch_decision"]
-                    if decision_type == "branch"
-                    else []
-                ),
+                "approval_required": False,
+                "approval_reasons": [],
                 "resolved_parameters": action["resolved_parameters"],
                 "rollback_target": None,
                 "status": "planned",
             }
-            for idx, action in enumerate(validation["resolved_actions"])
-        ]
+            actions.append(
+                plan_job_action(
+                    base_action,
+                    candidate_action=candidates_by_id.get(action["action_id"]),
+                )
+            )
         return make_execution_plan(payload, validation, actions)
 
     if decision_type == "rollback":

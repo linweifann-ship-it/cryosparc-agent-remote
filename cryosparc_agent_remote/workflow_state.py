@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from cryosparc_cli_tools import cryosparc_client
+from cryosparc_client import cryosparc_client
 
 
 WORKFLOW_STATE_SCHEMA_VERSION = "1.0"
@@ -67,7 +67,7 @@ def content_hash(prefix: str, payload: Any) -> str:
 
 
 def build_logical_node_ids(jobs: list[Any]) -> dict[str, str]:
-    """Assign stable logical node IDs independent of CryoSPARC display titles."""
+    """Assign readable logical node labels for diagnostics."""
     counts: dict[str, int] = {}
     mapping: dict[str, str] = {}
 
@@ -159,7 +159,8 @@ def extract_job_node(
     for input_name, input_spec in job.inputs.items():
         inputs[input_name] = [
             {
-                "source_workflow_node_id": logical_ids.get(connection.job_uid),
+                "source_workflow_node_id": connection.job_uid,
+                "source_logical_node_id": logical_ids.get(connection.job_uid),
                 "source_job_uid": connection.job_uid,
                 "source_output": connection.output,
                 "result_names": sorted(
@@ -210,7 +211,8 @@ def extract_job_node(
     )
 
     return {
-        "workflow_node_id": logical_ids[job.uid],
+        "workflow_node_id": job.uid,
+        "logical_node_id": logical_ids[job.uid],
         "cryosparc_job_uid": job.uid,
         "job_type": job.type,
         "title": job.title,
@@ -218,11 +220,19 @@ def extract_job_node(
         "updated_at": job.model.updated_at.isoformat(),
         "parent_job_uids": parent_job_uids,
         "parent_workflow_node_ids": [
+            uid
+            for uid in parent_job_uids
+        ],
+        "parent_logical_node_ids": [
             logical_ids[uid]
             for uid in parent_job_uids
         ],
         "child_job_uids": child_job_uids,
         "child_workflow_node_ids": [
+            uid
+            for uid in child_job_uids
+        ],
+        "child_logical_node_ids": [
             logical_ids[uid]
             for uid in child_job_uids
         ],
@@ -267,6 +277,7 @@ def snapshot_node(node: dict[str, Any]) -> dict[str, Any]:
     """Keep only stable, decision-relevant fields for snapshot hashing."""
     return {
         "workflow_node_id": node["workflow_node_id"],
+        "logical_node_id": node["logical_node_id"],
         "cryosparc_job_uid": node["cryosparc_job_uid"],
         "job_type": node["job_type"],
         "status": node["status"],
@@ -298,11 +309,12 @@ def find_node(
     workflow_state: dict[str, Any],
     node_id: str,
 ) -> dict[str, Any] | None:
-    """Find a node by logical workflow ID or real CryoSPARC job UID."""
+    """Find a node by CryoSPARC job UID, workflow ID, or logical diagnostic ID."""
     for node in workflow_state["nodes"]:
         if node_id in {
             node["workflow_node_id"],
             node["cryosparc_job_uid"],
+            node["logical_node_id"],
         }:
             return node
     return None

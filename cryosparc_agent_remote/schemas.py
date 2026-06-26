@@ -21,6 +21,7 @@ class RollbackTarget(BaseModel):
     workflow_node_id: str
     job_type: str
     reason_code: str
+    rollback_mode: str | None = None
 
 
 class BranchPlan(BaseModel):

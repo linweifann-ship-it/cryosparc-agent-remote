@@ -16,7 +16,7 @@ def candidate_actions():
         {
             "action_id": "forward_J8",
             "action_type": "forward",
-            "workflow_node_id": "node_extract_micrographs_multi_001",
+            "workflow_node_id": "J8",
             "reference_job_uid": "J8",
             "job_type": "extract_micrographs_multi",
             "description": "Dry-run candidate for fixed tests.",
@@ -55,7 +55,7 @@ def forward_decision(**overrides):
             {
                 "action_id": "forward_J8",
                 "action_type": "forward",
-                "workflow_node_id": "node_extract_micrographs_multi_001",
+                "workflow_node_id": "J8",
                 "job_type": "extract_micrographs_multi",
                 "parameters": {
                     "compute_num_gpus": 4,
@@ -89,8 +89,14 @@ class ActionRegistryFixedTests(unittest.TestCase):
         self.assertEqual(result["execution_plan"]["status"], "planned")
         self.assertEqual(result["execution_plan"]["action_count"], 1)
         self.assertFalse(result["execution_plan"]["approval_required"])
-        self.assertEqual(result["planned_actions"][0]["action_id"], "forward_J8")
-        self.assertEqual(result["planned_actions"][0]["status"], "planned")
+        self.assertEqual(
+            result["execution_plan"]["actions"][0]["action_id"],
+            "forward_J8",
+        )
+        self.assertEqual(
+            result["execution_plan"]["actions"][0]["status"],
+            "planned",
+        )
 
     def test_parameter_above_maximum_is_invalid(self):
         decision = forward_decision()
@@ -114,6 +120,24 @@ class ActionRegistryFixedTests(unittest.TestCase):
         )
         self.assertFalse(execute_result["success"])
         self.assertIsNone(execute_result["execution_plan"])
+
+    def test_high_gpu_count_requires_approval(self):
+        decision = forward_decision()
+        decision["selected_actions"][0]["parameters"]["compute_num_gpus"] = 8
+
+        result = execute_model_decision_payload(
+            decision,
+            candidate_actions=candidate_actions(),
+            expected_state_snapshot_id=STATE_ID,
+            expected_candidate_set_id=CANDIDATE_SET_ID,
+        )
+
+        action = result["execution_plan"]["actions"][0]
+        self.assertTrue(result["success"])
+        self.assertTrue(result["execution_plan"]["approval_required"])
+        self.assertTrue(action["approval_required"])
+        self.assertIn("high_gpu_count", action["approval_reasons"])
+        self.assertIn("high_gpu_count", result["execution_plan"]["approval_reasons"])
 
     def test_unknown_action_id_is_invalid(self):
         decision = forward_decision()
@@ -160,13 +184,17 @@ class ActionRegistryFixedTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["execution_plan"]["decision_type"], "stop")
         self.assertFalse(result["execution_plan"]["approval_required"])
-        self.assertEqual(result["planned_actions"][0]["action_type"], "stop")
+        self.assertEqual(
+            result["execution_plan"]["actions"][0]["action_type"],
+            "stop",
+        )
 
     def test_rollback_decision_is_valid_and_planned(self):
         rollback_target = {
-            "workflow_node_id": "node_template_picker_gpu_001",
+            "workflow_node_id": "J6",
             "job_type": "template_picker_gpu",
             "reason_code": "poor_particle_picking",
+            "rollback_mode": "rerun_from_target",
         }
         decision = forward_decision(
             decision_type="rollback",
@@ -190,9 +218,12 @@ class ActionRegistryFixedTests(unittest.TestCase):
             result["execution_plan"]["approval_reasons"],
             ["rollback_decision"],
         )
-        self.assertEqual(result["planned_actions"][0]["action_type"], "rollback")
         self.assertEqual(
-            result["planned_actions"][0]["rollback_target"],
+            result["execution_plan"]["actions"][0]["action_type"],
+            "rollback",
+        )
+        self.assertEqual(
+            result["execution_plan"]["actions"][0]["rollback_target"],
             rollback_target,
         )
 

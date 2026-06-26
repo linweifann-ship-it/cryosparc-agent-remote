@@ -13,12 +13,12 @@ create or queue CryoSPARC jobs while `dry_run=true`.
 
 ## Architecture
 
-The system has four layers:
+The system has five layers:
 
 1. **CryoSPARC access layer**
-   - Wraps CryoSPARC CLI commands and `cryosparc-tools`.
-   - Reads credentials from environment variables or CryoSPARC `config.sh`.
-   - Lives mainly in `cryosparc_cli_tools.py`.
+   - `cryosparc_client.py` creates authenticated `cryosparc-tools` clients.
+   - `cryosparc_cli_tools.py` wraps CryoSPARC CLI commands such as status,
+     version, GPU list, and worker tests.
 
 2. **Workflow state layer**
    - Reads jobs from a CryoSPARC project/workspace.
@@ -26,14 +26,20 @@ The system has four layers:
      outputs, running nodes, failed nodes, and a stable `state_snapshot_id`.
    - Lives in `workflow_state.py`.
 
-3. **Decision alignment layer**
+3. **Job metadata and execution layer**
+   - `job_specs.py` stores small "job cards" for common CryoSPARC job types:
+     editable parameters, GPU needs, interactive behavior, and approval needs.
+   - `job_executor.py` converts validated actions into generic
+     `workspace.create_job(job_type, connections, params)` plans.
+
+4. **Decision alignment layer**
    - Defines the upstream model output schema.
    - Supports `forward`, `rollback`, `branch`, and `stop`.
    - Validates action IDs, job types, workflow node IDs, parameter types,
      parameter ranges, `state_snapshot_id`, and `candidate_set_id`.
    - Lives in `schemas.py` and `action_registry.py`.
 
-4. **MCP tool layer**
+5. **MCP tool layer**
    - Exposes the project as MCP tools.
    - Lives in `cryosparc_mcp_server.py`.
 
@@ -146,7 +152,20 @@ Each action includes:
 - `parameter_template`
 - `default_parameters`
 
+`workflow_node_id` uses the real CryoSPARC Job UID, for example `J8`. The
+diagnostic logical label, when present, is separate and should not be used in
+model decisions.
+
 All generated actions currently remain `dry_run_only`.
+
+GPU actions with `compute_num_gpus > 4` are marked for human approval in the
+generated `execution_plan` with approval reason `high_gpu_count`.
+
+### `get_supported_job_types`
+
+Returns the job types that currently have explicit local metadata in
+`job_specs.py`. Unknown job types can still be represented, but they default to
+human approval before live execution.
 
 ### `validate_model_decision`
 
@@ -180,10 +199,10 @@ Inputs:
 Behavior:
 
 - If validation fails, returns `execution_mode="validation_failed"`.
-- If validation succeeds and `dry_run=true`, returns an `execution_plan` and
-  compatibility field `planned_actions`; it does not create jobs.
+- If validation succeeds and `dry_run=true`, returns an `execution_plan`; it
+  does not create jobs.
 - If `dry_run=false`, returns `live_execution_not_implemented` until human
-  approval policy and job wrappers are added.
+  approval policy is added and enabled.
 
 Example dry-run result:
 
@@ -209,7 +228,7 @@ Example dry-run result:
         "plan_step": 1,
         "action_id": "forward_J8",
         "action_type": "forward",
-        "workflow_node_id": "node_extract_micrographs_multi_001",
+        "workflow_node_id": "J8",
         "job_type": "extract_micrographs_multi",
         "execution_mode": "dry_run_only",
         "mcp_tool_name": null,
@@ -225,9 +244,6 @@ Example dry-run result:
     ],
     "execution_results": []
   },
-  "planned_actions": [
-    "same as execution_plan.actions"
-  ],
   "message": "Dry run only; no CryoSPARC jobs were created or queued."
 }
 ```
@@ -255,7 +271,8 @@ The model output must be a single valid JSON object with no surrounding prose.
 ## Current Limitations
 
 - Live execution is not implemented yet.
-- Human approval policy is not implemented yet.
+- Execution plans can mark approval requirements, including high GPU count, but
+  the full human approval workflow is not implemented yet.
 - Only Import Movies has a direct real-job creation wrapper.
 - Additional wrappers are still needed for extraction, 2D classification,
   refinement, job queueing, and job status/result tracking.
@@ -275,12 +292,12 @@ The model output must be a single valid JSON object with no surrounding prose.
 
 ## 架构
 
-系统分为四层：
+系统分为五层：
 
 1. **CryoSPARC 访问层**
-   - 封装 CryoSPARC CLI 和 `cryosparc-tools`。
-   - 从环境变量或 CryoSPARC `config.sh` 读取认证信息。
-   - 主要文件是 `cryosparc_cli_tools.py`。
+   - `cryosparc_client.py` 专门负责创建认证后的 `cryosparc-tools` client。
+   - `cryosparc_cli_tools.py` 专门封装 status、version、GPU 查询、worker
+     测试等 CLI 命令。
 
 2. **Workflow State 层**
    - 读取 CryoSPARC project/workspace 里的 jobs。
@@ -288,14 +305,20 @@ The model output must be a single valid JSON object with no surrounding prose.
      `state_snapshot_id`。
    - 主要文件是 `workflow_state.py`。
 
-3. **模型决策对齐层**
+3. **Job 说明卡和执行层**
+   - `job_specs.py` 保存常见 CryoSPARC job 的“说明卡”：可改参数、是否用
+     GPU、是否 interactive、是否需要审批。
+   - `job_executor.py` 把校验通过的动作转成通用
+     `workspace.create_job(job_type, connections, params)` 执行计划。
+
+4. **模型决策对齐层**
    - 定义上游模型输出格式。
    - 支持 `forward`、`rollback`、`branch`、`stop`。
    - 校验 action ID、job type、workflow node ID、参数类型、参数范围、
      `state_snapshot_id` 和 `candidate_set_id`。
    - 主要文件是 `schemas.py` 和 `action_registry.py`。
 
-4. **MCP Tool 层**
+5. **MCP Tool 层**
    - 把上述能力暴露成 MCP tools。
    - 主要文件是 `cryosparc_mcp_server.py`。
 
@@ -322,6 +345,7 @@ cd /ssd1/linweifan/cryosparc_agent
 - `test_cryosparc_workers`：运行 CryoSPARC worker 验证任务，会创建验证 jobs。
 - `create_cryosparc_import_movies_job`：创建真实 Import Movies job。
 - `get_workflow_state`：读取 workspace 并返回标准 DAG 快照。
+- `get_supported_job_types`：查看当前已有“说明卡”的 job 类型。
 - `get_candidate_actions`：根据当前 workflow 状态生成候选动作。
 - `validate_model_decision`：只校验模型输出，不执行 Job。
 - `execute_model_decision`：校验模型输出并返回执行计划，默认 dry-run。
@@ -329,8 +353,9 @@ cd /ssd1/linweifan/cryosparc_agent
 ## `execute_model_decision` 当前行为
 
 - 校验失败：返回 `execution_mode="validation_failed"`。
-- 校验通过且 `dry_run=true`：返回 `execution_plan` 和兼容字段
-  `planned_actions`，不创建 Job。
+- 校验通过且 `dry_run=true`：返回 `execution_plan`，不创建 Job。
+- 当 `compute_num_gpus > 4` 时，`execution_plan` 会标记需要人工审批，
+  原因为 `high_gpu_count`。
 - `dry_run=false`：返回 `live_execution_not_implemented`，因为真实执行还需要先接入
   Human Approval 和更多 Job Wrapper。
 

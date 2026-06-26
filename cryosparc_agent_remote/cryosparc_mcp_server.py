@@ -14,6 +14,7 @@ from cryosparc_cli_tools import (
     cryosparc_version,
     cryosparc_worker_gpulist,
 )
+from job_specs import list_supported_job_types
 from workflow_state import extract_workflow_state
 
 
@@ -90,6 +91,17 @@ def create_cryosparc_import_movies_job(
 
 
 # Workflow state and model-alignment tools.
+@mcp.tool()
+def get_supported_job_types() -> dict:
+    """
+    Return job types with explicit local metadata for generic execution plans.
+    """
+    return {
+        "success": True,
+        "job_types": list_supported_job_types(),
+    }
+
+
 @mcp.tool()
 def get_candidate_actions(
     project_uid: str,
