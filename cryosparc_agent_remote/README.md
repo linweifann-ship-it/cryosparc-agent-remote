@@ -1,15 +1,17 @@
 # CryoSPARC Agent Remote
 
-Current version: **Dry-Run Decision Executor v0.2**
+Current version: **V2 Workflow Decision Loop**
 
 `cryosparc_agent_remote` provides MCP tools for safely connecting an upstream
 decision model to a CryoSPARC instance on `172.16.1.2`. The project currently
-supports workflow-state extraction, candidate action generation, model decision
-validation, and dry-run execution planning.
+supports real workflow-state extraction, V2 model input generation, model
+decision validation/adaptation, real child-job creation, GPU-lane submission,
+internal job monitoring, and completed-job result packaging.
 
-The default execution path is intentionally safe: `execute_model_decision`
-validates the model output and returns a planned execution, but it does **not**
-create or queue CryoSPARC jobs while `dry_run=true`.
+The default execution path is still conservative: `execute_model_decision` and
+`execute_v2_model_decision` validate model output first and return a planned
+execution while `dry_run=true`. Live execution is available for approved
+forward actions and has been tested on the `g8m192_4090_slurm` lane.
 
 ## Architecture
 
@@ -26,20 +28,30 @@ The system has five layers:
      outputs, running nodes, and failed nodes.
    - Lives in `workflow_state.py`.
 
-3. **Job metadata and execution layer**
+3. **Job metadata, execution, and monitoring layer**
    - `job_specs.py` stores small "job cards" for common CryoSPARC job types:
      editable parameters, GPU needs, interactive behavior, and approval needs.
    - `job_executor.py` converts validated actions into generic
-     `workspace.create_job(job_type, connections, params)` plans.
+     `workspace.create_job(job_type, connections, params)` plans or live jobs.
+   - `job_result.py` keeps queue/running states internal and packages only
+     completed/failed results for model-facing updates.
 
 4. **Decision alignment layer**
    - Defines the upstream model output schema.
    - Supports `forward`, `rollback`, `branch`, and `stop`.
    - Validates action IDs, job types, workflow node IDs, parameter types,
      and parameter ranges against the supplied candidate actions.
-   - Lives in `schemas.py` and `action_registry.py`.
+   - `v2_decision_adapter.py` maps compact V2 model decisions back to the
+     internal candidate-action executor.
+   - Lives in `schemas.py`, `action_registry.py`, and
+     `v2_decision_adapter.py`.
 
-5. **MCP tool layer**
+5. **Model input and MCP tool layer**
+   - `model_input_builder.py` builds V2 model-facing payloads with
+     `dataset_info` and `current_state`.
+   - `known_workflow_retriever.py` fills `known_workflow_steps` from local
+     workflow files when a dataset match is available; otherwise it returns
+     `null`.
    - Exposes the project as MCP tools.
    - Lives in `cryosparc_mcp_server.py`.
 
@@ -195,8 +207,8 @@ Behavior:
 - If validation fails, returns `execution_mode="validation_failed"`.
 - If validation succeeds and `dry_run=true`, returns an `execution_plan`; it
   does not create jobs.
-- If `dry_run=false`, returns `live_execution_not_implemented` until human
-  approval policy is added and enabled.
+- If `dry_run=false`, approved forward actions can create and queue real
+  CryoSPARC jobs through `job_executor.py`.
 
 Example dry-run result:
 
@@ -258,27 +270,83 @@ The model output must be a single valid JSON object with no surrounding prose.
 }
 ```
 
+## V2 Model Input
+
+The model-facing input is now V2 and is built around dataset context plus the
+latest completed/failed workflow state:
+
+```json
+{
+  "schema_version": "2.0",
+  "task_type": "workflow_decision",
+  "dataset_info": {
+    "empiar_id": "EMPIAR-10025",
+    "emdb_id": null,
+    "resolution": null,
+    "input_type": "movies",
+    "macromolecules_type": "ribosome",
+    "num_of_maps": null,
+    "abstract": null,
+    "known_workflow_steps": null
+  },
+  "current_state": {
+    "last_node_id": "J33",
+    "last_action": "class_2D_new",
+    "last_node_status": "completed",
+    "last_node_info": {
+      "parameters": {
+        "class2D_K": 50,
+        "compute_num_gpus": 4
+      },
+      "metrics": {
+        "completed": true,
+        "failed": false,
+        "particles_count": 176623,
+        "class_averages_count": 50
+      }
+    }
+  }
+}
+```
+
+`candidate_actions` are kept inside MCP for validation and execution. They are
+not the primary model-facing input. Queue/running states are also kept internal;
+the model receives a new V2 payload only after a job completes or fails.
+
+## Verified Real-Job Tests
+
+- `P2/W3/J32`: created from `J7`, ran `extract_micrographs_multi` on
+  `g8m192_4090_slurm`, completed with 196 micrographs and 176623 particles.
+- `P2/W3/J33`: created from `J8`, ran `class_2D_new` on
+  `g8m192_4090_slurm`, completed with 176623 particles and 50 class averages.
+- `J33` Slurm submission used `#SBATCH --partition=g8m192` and
+  `#SBATCH --gres=gpu:4` on node `4090a`.
+
 ## Current Limitations
 
-- Live execution is not implemented yet.
-- Execution plans can mark approval requirements, including high GPU count, but
-  the full human approval workflow is not implemented yet.
-- Only Import Movies has a direct real-job creation wrapper.
-- Additional wrappers are still needed for extraction, 2D classification,
-  refinement, job queueing, and job status/result tracking.
+- The trained model API is not connected yet; current model interaction is
+  simulated through JSON payloads and smoke scripts.
+- Duplicate-job reuse is not implemented yet, so the next production step is
+  to detect equivalent completed/running child jobs before creating new ones.
+- Interactive CryoSPARC jobs such as picking inspection and 2D selection still
+  require human action in the CryoSPARC UI.
+- `known_workflow_steps` can be retrieved from local workflow files, but a
+  complete workflow knowledge base has not been built yet.
 
 ---
 
 # CryoSPARC Agent Remote 中文说明
 
-当前版本：**Dry-Run Decision Executor v0.2**
+当前版本：**V2 Workflow Decision Loop**
 
 `cryosparc_agent_remote` 的目标是把上游模型的结构化决策安全地接入
-`172.16.1.2` 上的 CryoSPARC。当前已经支持读取 workflow 状态、生成候选动作、
-校验模型决策，以及 dry-run 执行计划。
+`172.16.1.2` 上的 CryoSPARC。当前已经支持读取真实 workflow 状态、生成 V2
+model 输入、校验/转换模型决策、创建带上游连接的真实 child job、提交到 GPU
+lane、内部监控 Job，并在 Job 完成后生成结果上下文。
 
-默认执行路径是安全的：`execute_model_decision` 会先校验模型输出，然后只返回
-“计划执行什么”，在 `dry_run=true` 时不会创建或排队任何 CryoSPARC Job。
+默认执行路径仍然保守：`execute_model_decision` 和
+`execute_v2_model_decision` 会先校验模型输出；在 `dry_run=true` 时只返回执行计划。
+在 `dry_run=false` 且动作安全/已审批时，可以创建并提交真实 CryoSPARC Job。
 
 ## 架构
 
@@ -294,19 +362,26 @@ The model output must be a single valid JSON object with no surrounding prose.
    - 抽象成标准 DAG，包括节点、边、输入、输出、运行中节点和失败节点。
    - 主要文件是 `workflow_state.py`。
 
-3. **Job 说明卡和执行层**
+3. **Job 说明卡、执行和监控层**
    - `job_specs.py` 保存常见 CryoSPARC job 的“说明卡”：可改参数、是否用
      GPU、是否 interactive、是否需要审批。
    - `job_executor.py` 把校验通过的动作转成通用
-     `workspace.create_job(job_type, connections, params)` 执行计划。
+     `workspace.create_job(job_type, connections, params)` 执行计划或真实 Job。
+   - `job_result.py` 负责内部监控 queue/running，并只在 Job completed/failed 后
+     生成给 model 的结果包。
 
 4. **模型决策对齐层**
    - 定义上游模型输出格式。
    - 支持 `forward`、`rollback`、`branch`、`stop`。
    - 根据候选动作校验 action ID、job type、workflow node ID、参数类型和参数范围。
-   - 主要文件是 `schemas.py` 和 `action_registry.py`。
+   - `v2_decision_adapter.py` 把 V2 model decision 转成内部 candidate action 执行。
+   - 主要文件是 `schemas.py`、`action_registry.py` 和 `v2_decision_adapter.py`。
 
 5. **MCP Tool 层**
+   - `model_input_builder.py` 生成 V2 model 输入，包括 `dataset_info` 和
+     `current_state`。
+   - `known_workflow_retriever.py` 根据本地 workflow 文件检索
+     `known_workflow_steps`；匹配不到时填 `null`。
    - 把上述能力暴露成 MCP tools。
    - 主要文件是 `cryosparc_mcp_server.py`。
 
@@ -337,6 +412,10 @@ cd /ssd1/linweifan/cryosparc_agent
 - `get_candidate_actions`：根据当前 workflow 状态生成候选动作。
 - `validate_model_decision`：只校验模型输出，不执行 Job。
 - `execute_model_decision`：校验模型输出并返回执行计划，默认 dry-run。
+- `build_model_input_payload` / `get_workflow_decision_context`：生成 V2
+  model 输入。
+- `validate_v2_model_decision` / `execute_v2_model_decision`：校验并执行 V2
+  model decision。
 
 ## `execute_model_decision` 当前行为
 
@@ -344,8 +423,7 @@ cd /ssd1/linweifan/cryosparc_agent
 - 校验通过且 `dry_run=true`：返回 `execution_plan`，不创建 Job。
 - 当 `compute_num_gpus > 4` 时，`execution_plan` 会标记需要人工审批，
   原因为 `high_gpu_count`。
-- `dry_run=false`：返回 `live_execution_not_implemented`，因为真实执行还需要先接入
-  Human Approval 和更多 Job Wrapper。
+- `dry_run=false`：对安全/已审批的 forward 动作可以创建并提交真实 Job。
 
 ## 当前能完成什么
 
@@ -354,11 +432,21 @@ cd /ssd1/linweifan/cryosparc_agent
 - 校验模型输出 JSON。
 - 检查参数类型和范围。
 - 输出 dry-run 执行计划。
+- 创建带上游连接的真实 CryoSPARC child job。
+- 提交到默认 GPU lane：`g8m192_4090_slurm`。
+- 内部监控 queued/running/completed。
+- Job 完成后生成 V2 JSON 给 model。
+
+已完成真实测试：
+
+- `P2/W3/J32`：从 `J7` 创建 `extract_micrographs_multi`，在
+  `g8m192_4090_slurm` 完成，输出 176623 particles。
+- `P2/W3/J33`：从 `J8` 创建 `class_2D_new`，在 `g8m192_4090_slurm`
+  完成，输出 50 个 class averages。
 
 ## 还缺什么
 
-- 真实执行器。
-- Human Approval 审批策略。
-- 更多 CryoSPARC Job Wrapper。
-- Job queue/status/result 查询。
-- 与上游模型的端到端联调。
+- 接入师兄训练的真实 model API。
+- 防重复提交机制：已有同类型/同参数/同上游 Job 时应复用，不再新建。
+- interactive jobs 的人工确认流程。
+- 完整的 known workflow 知识库。
