@@ -15,6 +15,13 @@ from cryosparc_cli_tools import (
     cryosparc_worker_gpulist,
 )
 from job_specs import list_supported_job_types
+from job_result import get_job_result_package as registry_get_job_result_package
+from job_result import wait_for_job_result_package as registry_wait_for_job_result_package
+from model_input_builder import build_model_input_payload as registry_build_model_input_payload
+from v2_decision_adapter import (
+    adapt_v2_decision_to_internal,
+    execute_v2_model_decision_payload,
+)
 from workflow_state import extract_workflow_state
 
 
@@ -155,16 +162,6 @@ def validate_model_decision(
     return validate_model_decision_payload(
         decision,
         candidate_actions=candidate_actions,
-        expected_state_snapshot_id=(
-            candidate_context["state_snapshot_id"]
-            if candidate_context
-            else None
-        ),
-        expected_candidate_set_id=(
-            candidate_context["candidate_set_id"]
-            if candidate_context
-            else None
-        ),
     )
 
 
@@ -195,16 +192,146 @@ def execute_model_decision(
     return execute_model_decision_payload(
         decision,
         candidate_actions=candidate_actions,
-        expected_state_snapshot_id=(
-            candidate_context["state_snapshot_id"]
-            if candidate_context
-            else None
-        ),
-        expected_candidate_set_id=(
-            candidate_context["candidate_set_id"]
-            if candidate_context
-            else None
-        ),
+        dry_run=dry_run,
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+    )
+
+
+@mcp.tool()
+def get_job_result_package(
+    project_uid: str,
+    workspace_uid: str,
+    job_uid: str,
+    include_next_candidates: bool = True,
+) -> dict:
+    """
+    Return model-facing results only after a CryoSPARC job reaches a terminal state.
+
+    Queue/running states are returned as MCP-internal status packages with
+    ready_for_model=false.
+    """
+    return registry_get_job_result_package(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        job_uid=job_uid,
+        include_next_candidates=include_next_candidates,
+    )
+
+
+@mcp.tool()
+def wait_for_job_result_package(
+    project_uid: str,
+    workspace_uid: str,
+    job_uid: str,
+    timeout_seconds: int = 0,
+    poll_interval_seconds: int = 30,
+    include_next_candidates: bool = True,
+) -> dict:
+    """
+    Poll a CryoSPARC job and return a model-facing result package when finished.
+    """
+    return registry_wait_for_job_result_package(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        job_uid=job_uid,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        include_next_candidates=include_next_candidates,
+    )
+
+
+@mcp.tool()
+def build_model_input_payload(
+    project_uid: str,
+    workspace_uid: str,
+    current_job_uid: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
+    known_workflow_dirs: list[str] | None = None,
+) -> dict:
+    """
+    Build the V2 model-facing workflow decision payload.
+
+    Active jobs return MCP-internal status with ready_for_model=false instead of
+    a model-facing payload.
+    """
+    return registry_build_model_input_payload(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_job_uid=current_job_uid,
+        dataset_info=dataset_info,
+        known_workflow_dirs=known_workflow_dirs,
+    )
+
+
+@mcp.tool()
+def get_workflow_decision_context(
+    project_uid: str,
+    workspace_uid: str,
+    current_job_uid: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
+    known_workflow_dirs: list[str] | None = None,
+) -> dict:
+    """
+    Alias for build_model_input_payload using V2 workflow decision terminology.
+    """
+    return registry_build_model_input_payload(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_job_uid=current_job_uid,
+        dataset_info=dataset_info,
+        known_workflow_dirs=known_workflow_dirs,
+    )
+
+
+@mcp.tool()
+def validate_v2_model_decision(
+    decision: dict[str, Any],
+    project_uid: str,
+    workspace_uid: str,
+    current_node_id: str | None = None,
+) -> dict:
+    """
+    Adapt a V2 model decision to the internal decision schema and validate it.
+    """
+    candidate_context = registry_get_candidate_actions(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
+    )
+    adapter_result = adapt_v2_decision_to_internal(
+        decision,
+        candidate_context["candidate_actions"],
+    )
+    if not adapter_result["success"]:
+        return adapter_result
+    validation = validate_model_decision_payload(
+        adapter_result["internal_decision"],
+        candidate_actions=candidate_context["candidate_actions"],
+    )
+    return {
+        "success": validation["success"],
+        "adapter_result": adapter_result,
+        "validation": validation,
+    }
+
+
+@mcp.tool()
+def execute_v2_model_decision(
+    decision: dict[str, Any],
+    project_uid: str,
+    workspace_uid: str,
+    current_node_id: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """
+    Adapt and execute a V2 model decision through the existing internal executor.
+    """
+    return execute_v2_model_decision_payload(
+        decision,
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
         dry_run=dry_run,
     )
 

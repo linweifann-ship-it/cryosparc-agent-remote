@@ -23,7 +23,7 @@ The system has five layers:
 2. **Workflow state layer**
    - Reads jobs from a CryoSPARC project/workspace.
    - Converts the workspace into a normalized DAG with nodes, edges, inputs,
-     outputs, running nodes, failed nodes, and a stable `state_snapshot_id`.
+     outputs, running nodes, and failed nodes.
    - Lives in `workflow_state.py`.
 
 3. **Job metadata and execution layer**
@@ -36,7 +36,7 @@ The system has five layers:
    - Defines the upstream model output schema.
    - Supports `forward`, `rollback`, `branch`, and `stop`.
    - Validates action IDs, job types, workflow node IDs, parameter types,
-     parameter ranges, `state_snapshot_id`, and `candidate_set_id`.
+     and parameter ranges against the supplied candidate actions.
    - Lives in `schemas.py` and `action_registry.py`.
 
 5. **MCP tool layer**
@@ -124,7 +124,6 @@ Reads a CryoSPARC workspace and returns a normalized, read-only DAG snapshot.
 
 Output includes:
 
-- `state_snapshot_id`
 - `nodes`
 - `edges`
 - `root_nodes`
@@ -132,9 +131,6 @@ Output includes:
 - `running_nodes`
 - `failed_nodes`
 - `node_mapping`
-
-The generated timestamp is not included in the snapshot hash, so unchanged
-workspaces produce stable `state_snapshot_id` values.
 
 ### `get_candidate_actions`
 
@@ -179,8 +175,6 @@ The validator checks:
 - selected `action_id` membership
 - `action_type`, `workflow_node_id`, and `job_type` consistency
 - allowed parameters and parameter type/range constraints
-- `state_snapshot_id` freshness
-- `candidate_set_id` freshness
 
 This tool is validation-only. It does not create or enqueue CryoSPARC jobs.
 
@@ -192,7 +186,7 @@ Inputs:
 
 - `decision`: upstream model decision JSON.
 - `project_uid`, `workspace_uid`, `current_node_id`: optional live context used
-  to regenerate candidate actions and freshness IDs.
+  to regenerate candidate actions.
 - `candidate_actions`: optional caller-supplied candidate action list.
 - `dry_run`: optional boolean. Default: `true`.
 
@@ -218,8 +212,6 @@ Example dry-run result:
     "status": "planned",
     "dry_run_only": true,
     "decision_type": "forward",
-    "state_snapshot_id": "state_xxx",
-    "candidate_set_id": "candidates_xxx",
     "action_count": 1,
     "approval_required": false,
     "approval_reasons": [],
@@ -255,8 +247,6 @@ The model output must be a single valid JSON object with no surrounding prose.
 ```json
 {
   "schema_version": "1.0",
-  "state_snapshot_id": "state_xxx",
-  "candidate_set_id": "candidates_xxx",
   "decision_type": "forward",
   "selected_actions": [],
   "rollback_target": null,
@@ -301,8 +291,7 @@ The model output must be a single valid JSON object with no surrounding prose.
 
 2. **Workflow State 层**
    - 读取 CryoSPARC project/workspace 里的 jobs。
-   - 抽象成标准 DAG，包括节点、边、输入、输出、运行中节点、失败节点和稳定的
-     `state_snapshot_id`。
+   - 抽象成标准 DAG，包括节点、边、输入、输出、运行中节点和失败节点。
    - 主要文件是 `workflow_state.py`。
 
 3. **Job 说明卡和执行层**
@@ -314,8 +303,7 @@ The model output must be a single valid JSON object with no surrounding prose.
 4. **模型决策对齐层**
    - 定义上游模型输出格式。
    - 支持 `forward`、`rollback`、`branch`、`stop`。
-   - 校验 action ID、job type、workflow node ID、参数类型、参数范围、
-     `state_snapshot_id` 和 `candidate_set_id`。
+   - 根据候选动作校验 action ID、job type、workflow node ID、参数类型和参数范围。
    - 主要文件是 `schemas.py` 和 `action_registry.py`。
 
 5. **MCP Tool 层**
@@ -365,7 +353,6 @@ cd /ssd1/linweifan/cryosparc_agent
 - 从真实 workflow 子节点生成候选动作。
 - 校验模型输出 JSON。
 - 检查参数类型和范围。
-- 检查 state/candidate ID 是否过期。
 - 输出 dry-run 执行计划。
 
 ## 还缺什么

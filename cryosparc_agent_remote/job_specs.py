@@ -4,6 +4,7 @@ from typing import Any
 
 
 HIGH_GPU_APPROVAL_THRESHOLD = 4
+DEFAULT_GPU_LANE = "g8m192_4090_slurm"
 
 
 # Parameter rules are intentionally small: only expose knobs the model may edit.
@@ -38,7 +39,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
         },
@@ -48,7 +49,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
             "df_search_min": {"type": "number", "minimum": 0},
@@ -67,7 +68,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "diameter": {"type": "number", "minimum": 0},
             "diameter_max": {"type": "number", "minimum": 0},
@@ -78,7 +79,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "diameter": {"type": "number", "minimum": 0},
             "min_distance": {"type": "number", "minimum": 0},
@@ -102,7 +103,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
             "box_size_pix": {"type": "integer", "minimum": 32},
@@ -122,7 +123,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "compute_num_gpus": {"type": "integer", "minimum": 1, "maximum": 8},
             "class2D_K": {"type": "integer", "minimum": 2},
@@ -144,7 +145,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {},
     },
     "homo_refine_new": {
@@ -152,7 +153,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "requires_gpu": True,
         "requires_approval": False,
         "interactive": False,
-        "default_lane": "h20_slurm",
+        "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
             "refine_symmetry": {"type": "string"},
             "refine_defocus_refine": {"type": "boolean"},

@@ -118,20 +118,8 @@ def extract_workflow_state(project_uid: str, workspace_uid: str) -> dict[str, An
         if node["status"] in {"failed", "killed"}
     ]
 
-    snapshot_payload = {
-        "schema_version": WORKFLOW_STATE_SCHEMA_VERSION,
-        "project_uid": project_uid,
-        "workspace_uid": workspace_uid,
-        "nodes": [
-            snapshot_node(node)
-            for node in nodes
-        ],
-        "edges": edges,
-    }
-
     return {
         "schema_version": WORKFLOW_STATE_SCHEMA_VERSION,
-        "state_snapshot_id": content_hash("state", snapshot_payload),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "project_uid": project_uid,
         "workspace_uid": workspace_uid,
@@ -218,6 +206,18 @@ def extract_job_node(
         "title": job.title,
         "status": job.status,
         "updated_at": job.model.updated_at.isoformat(),
+        "timestamps": {
+            "created_at": optional_isoformat(job.model.created_at),
+            "queued_at": optional_isoformat(job.model.queued_at),
+            "started_at": optional_isoformat(job.model.started_at),
+            "running_at": optional_isoformat(job.model.running_at),
+            "launched_at": optional_isoformat(job.model.launched_at),
+            "completed_at": optional_isoformat(job.model.completed_at),
+            "failed_at": optional_isoformat(job.model.failed_at),
+            "killed_at": optional_isoformat(job.model.killed_at),
+            "heartbeat_at": optional_isoformat(job.model.heartbeat_at),
+            "updated_at": optional_isoformat(job.model.updated_at),
+        },
         "parent_job_uids": parent_job_uids,
         "parent_workflow_node_ids": [
             uid
@@ -273,24 +273,6 @@ def build_edges(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def snapshot_node(node: dict[str, Any]) -> dict[str, Any]:
-    """Keep only stable, decision-relevant fields for snapshot hashing."""
-    return {
-        "workflow_node_id": node["workflow_node_id"],
-        "logical_node_id": node["logical_node_id"],
-        "cryosparc_job_uid": node["cryosparc_job_uid"],
-        "job_type": node["job_type"],
-        "status": node["status"],
-        "parent_job_uids": node["parent_job_uids"],
-        "child_job_uids": node["child_job_uids"],
-        "inputs": node["inputs"],
-        "outputs": node["outputs"],
-        "key_parameters": node["key_parameters"],
-        "has_error": node["has_error"],
-        "has_warning": node["has_warning"],
-    }
-
-
 def derive_workflow_status(nodes: list[dict[str, Any]]) -> str:
     """Summarize the workspace status from individual job states."""
     statuses = {node["status"] for node in nodes}
@@ -342,4 +324,13 @@ def to_json_safe(value: Any) -> Any:
             to_json_safe(item)
             for item in value
         ]
+    return str(value)
+
+
+def optional_isoformat(value: Any) -> str | None:
+    """Return an ISO timestamp string for nullable CryoSPARC datetime values."""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
     return str(value)

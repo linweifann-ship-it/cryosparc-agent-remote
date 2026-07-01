@@ -7,10 +7,6 @@ from action_registry import (
 )
 
 
-STATE_ID = "state_test"
-CANDIDATE_SET_ID = "candidates_test"
-
-
 def candidate_actions():
     return [
         {
@@ -48,8 +44,6 @@ def candidate_actions():
 def forward_decision(**overrides):
     decision = {
         "schema_version": "1.0",
-        "state_snapshot_id": STATE_ID,
-        "candidate_set_id": CANDIDATE_SET_ID,
         "decision_type": "forward",
         "selected_actions": [
             {
@@ -79,8 +73,6 @@ class ActionRegistryFixedTests(unittest.TestCase):
         result = execute_model_decision_payload(
             forward_decision(),
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
 
         self.assertTrue(result["success"])
@@ -105,8 +97,6 @@ class ActionRegistryFixedTests(unittest.TestCase):
         result = validate_model_decision_payload(
             decision,
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
 
         self.assertFalse(result["success"])
@@ -115,8 +105,6 @@ class ActionRegistryFixedTests(unittest.TestCase):
         execute_result = execute_model_decision_payload(
             decision,
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
         self.assertFalse(execute_result["success"])
         self.assertIsNone(execute_result["execution_plan"])
@@ -128,8 +116,6 @@ class ActionRegistryFixedTests(unittest.TestCase):
         result = execute_model_decision_payload(
             decision,
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
 
         action = result["execution_plan"]["actions"][0]
@@ -139,6 +125,36 @@ class ActionRegistryFixedTests(unittest.TestCase):
         self.assertIn("high_gpu_count", action["approval_reasons"])
         self.assertIn("high_gpu_count", result["execution_plan"]["approval_reasons"])
 
+    def test_live_execution_requires_project_and_workspace(self):
+        result = execute_model_decision_payload(
+            forward_decision(),
+            candidate_actions=candidate_actions(),
+            dry_run=False,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["execution_mode"], "missing_execution_context")
+        self.assertEqual(result["issues"][0]["code"], "missing_execution_context")
+
+    def test_high_gpu_live_execution_is_blocked_by_approval(self):
+        decision = forward_decision()
+        decision["selected_actions"][0]["parameters"]["compute_num_gpus"] = 8
+
+        result = execute_model_decision_payload(
+            decision,
+            candidate_actions=candidate_actions(),
+            dry_run=False,
+            project_uid="P1",
+            workspace_uid="W1",
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["execution_mode"], "live_execution")
+        self.assertEqual(
+            result["execution_results"][0]["status"],
+            "approval_required",
+        )
+
     def test_unknown_action_id_is_invalid(self):
         decision = forward_decision()
         decision["selected_actions"][0]["action_id"] = "forward_J999"
@@ -146,25 +162,10 @@ class ActionRegistryFixedTests(unittest.TestCase):
         result = validate_model_decision_payload(
             decision,
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
 
         self.assertFalse(result["success"])
         self.assertEqual(result["issues"][0]["code"], "unknown_action_id")
-
-    def test_stale_state_snapshot_is_invalid(self):
-        decision = forward_decision(state_snapshot_id="state_old")
-
-        result = validate_model_decision_payload(
-            decision,
-            candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
-        )
-
-        self.assertFalse(result["success"])
-        self.assertEqual(result["issues"][0]["code"], "stale_workflow_state")
 
     def test_stop_decision_is_valid_and_planned(self):
         decision = forward_decision(
@@ -177,8 +178,6 @@ class ActionRegistryFixedTests(unittest.TestCase):
         result = execute_model_decision_payload(
             decision,
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
 
         self.assertTrue(result["success"])
@@ -208,8 +207,6 @@ class ActionRegistryFixedTests(unittest.TestCase):
         result = execute_model_decision_payload(
             decision,
             candidate_actions=candidate_actions(),
-            expected_state_snapshot_id=STATE_ID,
-            expected_candidate_set_id=CANDIDATE_SET_ID,
         )
 
         self.assertTrue(result["success"])

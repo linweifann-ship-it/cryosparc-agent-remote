@@ -9,7 +9,7 @@ from schemas import (
     ValidationResult,
     parse_model_decision,
 )
-from job_executor import plan_job_action
+from job_executor import execute_job_action, plan_job_action
 from job_specs import get_parameter_template
 from workflow_state import content_hash, extract_workflow_state, find_node
 
@@ -37,18 +37,9 @@ def get_candidate_actions(
         workflow_state,
         canonical_current_node_id,
     )
-    candidate_payload = {
-        "state_snapshot_id": workflow_state["state_snapshot_id"],
-        "registry_version": REGISTRY_VERSION,
-        "current_node_id": canonical_current_node_id,
-        "candidate_actions": candidate_actions,
-    }
-
     return {
         "schema_version": "1.0",
         "registry_version": REGISTRY_VERSION,
-        "state_snapshot_id": workflow_state["state_snapshot_id"],
-        "candidate_set_id": content_hash("candidates", candidate_payload),
         "generated_at": workflow_state["generated_at"],
         "project_uid": project_uid,
         "workspace_uid": workspace_uid,
@@ -87,7 +78,7 @@ def generate_candidate_actions(
     child_nodes = [
         node
         for node in child_nodes
-        if node is not None
+        if node is not None and node["status"] not in {"failed", "killed"}
     ]
 
     is_branch = len(child_nodes) > 1
@@ -181,8 +172,6 @@ def build_parameter_template(
 def validate_model_decision_payload(
     payload: dict[str, Any],
     candidate_actions: list[dict[str, Any]] | None = None,
-    expected_state_snapshot_id: str | None = None,
-    expected_candidate_set_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate a model decision without creating or enqueueing CryoSPARC jobs."""
     decision, schema_issues = parse_model_decision(payload)
@@ -200,25 +189,15 @@ def validate_model_decision_payload(
         candidate_actions=candidate_actions,
     )
 
-    context_issues = validate_context_ids(
-        decision,
-        expected_state_snapshot_id=expected_state_snapshot_id,
-        expected_candidate_set_id=expected_candidate_set_id,
-    )
-    if context_issues:
-        result.success = False
-        result.valid_actions = False
-        result.issues = context_issues + result.issues
-
     return result.model_dump()
 
 
 def execute_model_decision_payload(
     payload: dict[str, Any],
     candidate_actions: list[dict[str, Any]] | None = None,
-    expected_state_snapshot_id: str | None = None,
-    expected_candidate_set_id: str | None = None,
     dry_run: bool = True,
+    project_uid: str | None = None,
+    workspace_uid: str | None = None,
 ) -> dict[str, Any]:
     """
     Convert a validated decision into an execution plan.
@@ -230,8 +209,6 @@ def execute_model_decision_payload(
     validation = validate_model_decision_payload(
         payload,
         candidate_actions=candidate_actions,
-        expected_state_snapshot_id=expected_state_snapshot_id,
-        expected_candidate_set_id=expected_candidate_set_id,
     )
     if not validation["success"]:
         return {
@@ -261,26 +238,56 @@ def execute_model_decision_payload(
             "message": "Dry run only; no CryoSPARC jobs were created or queued.",
         }
 
+    if not project_uid or not workspace_uid:
+        return {
+            "success": False,
+            "dry_run": False,
+            "execution_mode": "missing_execution_context",
+            "decision_type": validation["decision_type"],
+            "validation": validation,
+            "execution_plan": execution_plan,
+            "execution_results": [],
+            "issues": [
+                {
+                    "severity": "error",
+                    "code": "missing_execution_context",
+                    "message": "project_uid and workspace_uid are required for live execution.",
+                    "path": None,
+                }
+            ],
+            "warnings": validation["warnings"],
+        }
+
+    execution_results = [
+        execute_job_action(
+            project_uid=project_uid,
+            workspace_uid=workspace_uid,
+            planned_action=action,
+            dry_run=False,
+        )
+        for action in execution_plan["actions"]
+    ]
     return {
-        "success": False,
+        "success": all(result["success"] for result in execution_results),
         "dry_run": False,
-        "execution_mode": "live_execution_not_implemented",
+        "execution_mode": "live_execution",
+        "model_visible": False,
+        "next_model_input": None,
         "decision_type": validation["decision_type"],
         "validation": validation,
         "execution_plan": execution_plan,
-        "execution_results": [],
+        "execution_results": execution_results,
         "issues": [
-            {
-                "severity": "error",
-                "code": "live_execution_not_implemented",
-                "message": (
-                    "Live CryoSPARC execution is not implemented yet. "
-                    "Add approval policy and job wrappers before setting dry_run=false."
-                ),
-                "path": None,
-            }
+            issue
+            for result in execution_results
+            for issue in result.get("issues", [])
         ],
         "warnings": validation["warnings"],
+        "message": (
+            "Live execution status is MCP-internal. Wait for the created job to "
+            "complete, then call get_job_result_package before asking the model "
+            "for the next decision."
+        ),
     }
 
 
@@ -380,8 +387,6 @@ def make_execution_plan(
     )
     plan_payload = {
         "decision_type": validation["decision_type"],
-        "state_snapshot_id": payload.get("state_snapshot_id"),
-        "candidate_set_id": payload.get("candidate_set_id"),
         "actions": actions,
     }
     return {
@@ -390,8 +395,6 @@ def make_execution_plan(
         "status": "planned",
         "dry_run_only": True,
         "decision_type": validation["decision_type"],
-        "state_snapshot_id": payload.get("state_snapshot_id"),
-        "candidate_set_id": payload.get("candidate_set_id"),
         "action_count": len(actions),
         "approval_required": any(
             action["approval_required"]
@@ -401,59 +404,6 @@ def make_execution_plan(
         "actions": actions,
         "execution_results": [],
     }
-
-
-def validate_context_ids(
-    decision: ModelDecision,
-    expected_state_snapshot_id: str | None,
-    expected_candidate_set_id: str | None,
-) -> list[ValidationIssue]:
-    """Detect stale model decisions by comparing state and candidate IDs."""
-    issues: list[ValidationIssue] = []
-
-    if expected_state_snapshot_id:
-        if not decision.state_snapshot_id:
-            issues.append(
-                ValidationIssue(
-                    code="missing_state_snapshot_id",
-                    message="Decision must return the supplied state_snapshot_id",
-                    path="state_snapshot_id",
-                )
-            )
-        elif decision.state_snapshot_id != expected_state_snapshot_id:
-            issues.append(
-                ValidationIssue(
-                    code="stale_workflow_state",
-                    message=(
-                        "Decision state_snapshot_id does not match the current "
-                        "workflow state"
-                    ),
-                    path="state_snapshot_id",
-                )
-            )
-
-    if expected_candidate_set_id:
-        if not decision.candidate_set_id:
-            issues.append(
-                ValidationIssue(
-                    code="missing_candidate_set_id",
-                    message="Decision must return the supplied candidate_set_id",
-                    path="candidate_set_id",
-                )
-            )
-        elif decision.candidate_set_id != expected_candidate_set_id:
-            issues.append(
-                ValidationIssue(
-                    code="stale_candidate_set",
-                    message=(
-                        "Decision candidate_set_id does not match the current "
-                        "candidate actions"
-                    ),
-                    path="candidate_set_id",
-                )
-            )
-
-    return issues
 
 
 def validate_decision_against_registry(
