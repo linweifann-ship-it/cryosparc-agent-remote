@@ -3,7 +3,7 @@
 Current version: **V2 Workflow Decision Loop**
 
 `cryosparc_agent_remote` provides MCP tools for safely connecting an upstream
-decision model to a CryoSPARC instance on `172.16.1.2`. The project currently
+decision model to a remote CryoSPARC instance. The project currently
 supports real workflow-state extraction, V2 model input generation, model
 decision validation/adaptation, real child-job creation, GPU-lane submission,
 internal job monitoring, completed-job result packaging, XML dataset metadata
@@ -553,10 +553,47 @@ env PYTHONPATH=/ssd1/linweifan/cryosparc_agent \
 - `J33` Slurm submission used `#SBATCH --partition=g8m192` and
   `#SBATCH --gres=gpu:4` on node `4090a`.
 
+The direct-model V2 loop was also tested with the local Qwen+LoRA model on
+server workspace `P2/W4`:
+
+- `J34 class_2D_new`: created from `J8.particles`, completed with 50 class
+  averages.
+- `J35 select_2D`: interactive job; the human selected 11 templates in the
+  CryoSPARC UI, producing 143122 selected particles.
+- `J36 class_2D_new`: created from `J35.particles_selected`, completed.
+- `J37 select_2D`: interactive job; the human selected 16 templates, producing
+  133812 selected particles.
+- Adding `current_state.recent_nodes` to the V2 MCP-to-model payload changed
+  the model's next action from repeated `class_2D_new` to `homo_refine_new`.
+- `J39 homo_refine_new`: created from `J37.particles_selected` plus
+  `J2.imported_volume_1`, completed with volume, mask, FSC mask, and 133602
+  particles.
+- After generic job planning was enabled, the model's repeated
+  `homo_refine_new` decision was no longer rejected by `candidate_not_found`.
+  MCP inferred the same upstream connections and created parallel refinement
+  `J40 homo_refine_new`, which was running during the last check with progress
+  outputs and no monitoring flags.
+
+These tests verify the intended closed-loop behavior:
+
+```text
+MCP V2 payload -> local model decision -> MCP adapter -> dry-run plan
+-> live CryoSPARC job -> internal queue/running monitor
+-> completed/failed job result -> next MCP V2 payload
+```
+
+The tested model currently does not emit `connections`. MCP therefore infers
+connections for supported workflow contexts, such as
+`select_2D/homo_refine_new -> homo_refine_new`. For unfamiliar future job
+types, the generic planner can still create a plan from `job_type` and
+`parameters`, but live execution may need either model-supplied connections or
+additional MCP-side connection inference.
+
 ## Current Limitations
 
-- The trained model API is not connected yet; current model interaction is
-  simulated through JSON payloads and smoke scripts.
+- The trained model API is not connected yet; current model interaction uses
+  direct local inference through smoke scripts with
+  `enable_thinking=False`/JSON-only parsing.
 - Duplicate-job reuse is not implemented yet, so the next production step is
   to detect equivalent completed/running child jobs before creating new ones.
 - Interactive CryoSPARC jobs such as picking inspection and 2D selection still
@@ -570,8 +607,8 @@ env PYTHONPATH=/ssd1/linweifan/cryosparc_agent \
 
 当前版本：**V2 Workflow Decision Loop**
 
-`cryosparc_agent_remote` 的目标是把上游模型的结构化决策安全地接入
-`172.16.1.2` 上的 CryoSPARC。当前已经支持读取真实 workflow 状态、生成 V2
+`cryosparc_agent_remote` 的目标是把上游模型的结构化决策安全地接入远程
+CryoSPARC。当前已经支持读取真实 workflow 状态、生成 V2
 model 输入、校验/转换模型决策、创建带上游连接的真实 child job、提交到 GPU
 lane、内部监控 Job、XML 数据集信息解析、known workflow 检索，并在 Job
 完成后生成结果上下文。
@@ -693,10 +730,45 @@ cd /ssd1/linweifan/cryosparc_agent
   `g8m192_4090_slurm` 完成，输出 176623 particles。
 - `P2/W3/J33`：从 `J8` 创建 `class_2D_new`，在 `g8m192_4090_slurm`
   完成，输出 50 个 class averages。
+- `P2/W4/J34`：由真实模型闭环创建 `class_2D_new`，输入来自 `J8.particles`，
+  完成后输出 50 个 class averages。
+- `P2/W4/J35`：创建 `select_2D` interactive job；人类在 CryoSPARC UI 中选择
+  11 个 templates，输出 143122 个 selected particles。
+- `P2/W4/J36`：从 `J35.particles_selected` 再次创建 `class_2D_new`，完成。
+- `P2/W4/J37`：第二次 `select_2D`；人类选择 16 个 templates，输出 133812 个
+  selected particles。
+- 在 V2 MCP 输出中加入 `current_state.recent_nodes` 后，模型不再重复选择
+  `class_2D_new`，而是转向 `homo_refine_new`。
+- `P2/W4/J39`：MCP 根据模型 decision 创建 `homo_refine_new`，自动连接
+  `J37.particles_selected` 和 `J2.imported_volume_1`，完成后输出 volume、mask、
+  FSC mask 和 133602 个 particles。
+- 取消 candidate 硬限制、启用 generic job planning 后，模型再次选择
+  `homo_refine_new` 不再触发 `candidate_not_found`。MCP 自动复用同一组上游连接，
+  创建并行 refinement `J40 homo_refine_new`；最后一次检查时 J40 正在运行，有
+  正常输出进度，没有 monitoring flags。
+
+这些测试验证了当前闭环：
+
+```text
+MCP 生成 V2 JSON -> 本地 Qwen+LoRA 模型返回 decision
+-> MCP adapter 转换 -> dry-run plan
+-> 创建真实 CryoSPARC Job -> MCP 内部监控 queue/running
+-> Job completed/failed 后再生成下一轮 V2 JSON
+```
+
+当前测试模型不稳定输出 `connections`。所以 MCP 的策略是：
+
+- 对已支持/可推断的 workflow context，MCP 自动推断连接。
+- 例如 `select_2D/homo_refine_new -> homo_refine_new`，MCP 会自动使用
+  `particles` 和 `volume` 的上游连接。
+- 对未来陌生 job type，generic planner 可以先按 `job_type` 和 `parameters`
+  生成计划；如果 live 创建需要输入连接，则后续需要 model 输出 `connections`
+  或 MCP 增加新的连接推断规则。
 
 ## 还缺什么
 
-- 接入师兄训练的真实 model API；当前已能在服务器直接调用本地模型做闭环测试。
+- 接入师兄训练的真实 model API；当前已能在服务器直接调用本地模型做闭环测试，
+  但还不是 API 服务形式。
 - `import_movies` 真实 live 创建还需要用户提供 movie 路径 `blob_paths` 和必要的
   gain reference 路径。
 - 防重复提交机制：已有同类型/同参数/同上游 Job 时应复用，不再新建。
