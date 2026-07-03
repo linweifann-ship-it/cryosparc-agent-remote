@@ -111,7 +111,7 @@ def build_queue_plan(spec: dict[str, Any], lane: str | None) -> dict[str, Any]:
         "hostname": None,
         "gpus": [],
         "cluster_vars": {},
-        "will_queue": selected_lane is not None and not spec["interactive"],
+        "will_queue": not spec["interactive"],
     }
 
 
@@ -188,12 +188,15 @@ def execute_job_action(
         queue = planned_action["queue"]
         queued = False
         if queue["will_queue"]:
-            job.queue(
-                lane=queue["lane"],
-                hostname=queue["hostname"],
-                gpus=queue["gpus"],
-                cluster_vars=queue["cluster_vars"],
-            )
+            if queue["lane"]:
+                job.queue(
+                    lane=queue["lane"],
+                    hostname=queue["hostname"],
+                    gpus=queue["gpus"],
+                    cluster_vars=queue["cluster_vars"],
+                )
+            else:
+                job.queue()
             queued = True
 
         return {

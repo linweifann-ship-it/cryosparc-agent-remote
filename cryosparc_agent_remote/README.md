@@ -22,6 +22,11 @@ plan from the model decision.
 
 ## Architecture
 
+The current architecture separates "what the model sees" from "what MCP can
+execute". The model sees only V2 workflow context; MCP owns state management,
+connection resolution, validation, queueing, monitoring, and the final
+CryoSPARC API calls.
+
 The system has five layers:
 
 1. **CryoSPARC access layer**
@@ -42,6 +47,9 @@ The system has five layers:
      `workspace.create_job(job_type, connections, params)` plans or live jobs.
      It prefers model-supplied `connections`, then falls back to internally
      inferred inputs from workflow context.
+   - Non-interactive CPU/import jobs are queued with `job.queue()` even when no
+     GPU lane is set. GPU jobs use the configured default lane,
+     currently `g8m192_4090_slurm`.
    - `job_result.py` keeps queue/running states internal and packages only
      completed/failed results for model-facing updates.
 
@@ -52,6 +60,10 @@ The system has five layers:
    - Candidate actions are optional internal hints, not hard requirements.
      Unknown future job types are planned as generic CryoSPARC jobs, with
      warnings and approval policy preserved.
+   - This means MCP no longer needs to pre-enumerate every possible CryoSPARC
+     job type before the model can request it. For unfamiliar jobs, the model
+     should provide the CryoSPARC `job_type`, valid `parameters`, and, when MCP
+     cannot infer them, explicit input `connections`.
    - Lives in `schemas.py`, `action_registry.py`, and
      `v2_decision_adapter.py`.
 
@@ -66,8 +78,105 @@ The system has five layers:
      workflow files when a dataset match is available, including CryoSPARC
      workflow JSON files whose `jobs` are stored as a dictionary; otherwise it
      returns `null`.
+   - `scripts/extract_dataset_info_xml.py` turns an EMDB XML file into a
+     reusable dataset JSON file for closed-loop tests.
    - Exposes the project as MCP tools.
    - Lives in `cryosparc_mcp_server.py`.
+
+The model-facing V2 payload intentionally omits `candidate_actions`. A typical
+payload is:
+
+```json
+{
+  "schema_version": "2.0",
+  "task_type": "workflow_decision",
+  "dataset_info": {
+    "emdb_id": "EMD-6287",
+    "empiar_id": "EMPIAR-10025",
+    "pixel_size_A": 0.982,
+    "accelerating_voltage_kv": 300,
+    "spherical_aberration_mm": 2.7,
+    "total_exposure_dose_e_per_A2": 53,
+    "symmetry": "D7",
+    "known_workflow_steps": []
+  },
+  "current_state": {
+    "last_node_id": "J42",
+    "last_action": "import_micrographs",
+    "last_node_status": "completed",
+    "recent_nodes": [
+      {"node_id": "J42", "job_type": "import_micrographs", "status": "completed"}
+    ],
+    "last_node_info": {}
+  }
+}
+```
+
+The model can answer with a compact decision:
+
+```json
+{
+  "schema_version": "1.0",
+  "decision_type": "forward",
+  "action": "patch_ctf_estimation_multi",
+  "parameters": {"compute_num_gpus": 1},
+  "connections": {
+    "exposures": {
+      "source_job_uid": "J42",
+      "source_output": "imported_micrographs"
+    }
+  },
+  "reason": "Imported micrographs are ready for CTF estimation.",
+  "confidence": 0.9,
+  "risk_flags": [],
+  "evidence": []
+}
+```
+
+MCP then builds a dry-run plan or live job. Queue/running states stay internal
+to MCP. Only completed/failed jobs produce the next model-facing V2 payload.
+
+## Current Verified Workflow
+
+The latest real server test used project `P2`, workspace `W5`
+(`W5 Agent_xml_abi`), and EMDB XML metadata:
+
+```bash
+/hdd1/huangjianhua/agent/data/experiment/emd-6287.xml
+```
+
+The XML parser extracted:
+
+- Pixel size: `0.982 A`
+- Accelerating voltage: `300 kV`
+- Spherical aberration: `2.7 mm`
+- Total exposure dose: `53 e/A^2`
+- Symmetry: `D7`
+
+The known workflow file was:
+
+```bash
+/ssd1/linweifan/cryosparc_agent/reports/model_closed_loop/empiar-10025-workflow-standard.json
+```
+
+It contains `homo_abinit` and does not require `import_volumes`. The server data
+directory contains averaged micrographs:
+
+```bash
+/home/share/empiar/10025/data/14sep05c_averaged_196/*.mrc
+```
+
+Because those files are micrographs rather than movies, the live run used
+`import_micrographs` as the first job:
+
+- `J42 import_micrographs`: completed, `196` imported micrographs, `0` failed.
+- `J43 patch_ctf_estimation_multi`: submitted from `J42.imported_micrographs`
+  to `exposures`, running during the last check with `100` completed exposures
+  and `96` incomplete exposures.
+
+One earlier test job, `J41`, was created before the import-queue fix and stayed
+in `building`; it should be ignored in decision context or cleaned up manually
+before formal benchmark runs.
 
 ## Server Run Command
 

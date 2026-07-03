@@ -32,6 +32,8 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
             "blob_paths": {"type": "string", "required": True},
             "psize_A": {"type": "number", "minimum": 0},
             "accel_kv": {"type": "number", "minimum": 0},
+            "cs_mm": {"type": "number", "minimum": 0},
+            "total_dose_e_per_A2": {"type": "number", "minimum": 0},
         },
     },
     "patch_motion_correction_multi": {
