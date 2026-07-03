@@ -582,24 +582,15 @@ MCP V2 payload -> local model decision -> MCP adapter -> dry-run plan
 -> completed/failed job result -> next MCP V2 payload
 ```
 
-The tested model currently does not emit `connections`. MCP therefore infers
-connections for supported workflow contexts, such as
-`select_2D/homo_refine_new -> homo_refine_new`. For unfamiliar future job
-types, the generic planner can still create a plan from `job_type` and
-`parameters`, but live execution may need either model-supplied connections or
-additional MCP-side connection inference.
-
 ## Current Limitations
 
-- The trained model API is not connected yet; current model interaction uses
+- Real model API. Current model interaction uses
   direct local inference through smoke scripts with
   `enable_thinking=False`/JSON-only parsing.
-- Duplicate-job reuse is not implemented yet, so the next production step is
-  to detect equivalent completed/running child jobs before creating new ones.
+- Live `import_movies` creation still requires user-provided movie
+  `blob_paths` and required gain reference paths.
 - Interactive CryoSPARC jobs such as picking inspection and 2D selection still
   require human action in the CryoSPARC UI.
-- `known_workflow_steps` can be retrieved from local workflow files, but a
-  complete workflow knowledge base has not been built yet.
 
 ---
 
@@ -756,21 +747,10 @@ MCP 生成 V2 JSON -> 本地 Qwen+LoRA 模型返回 decision
 -> Job completed/failed 后再生成下一轮 V2 JSON
 ```
 
-当前测试模型不稳定输出 `connections`。所以 MCP 的策略是：
-
-- 对已支持/可推断的 workflow context，MCP 自动推断连接。
-- 例如 `select_2D/homo_refine_new -> homo_refine_new`，MCP 会自动使用
-  `particles` 和 `volume` 的上游连接。
-- 对未来陌生 job type，generic planner 可以先按 `job_type` 和 `parameters`
-  生成计划；如果 live 创建需要输入连接，则后续需要 model 输出 `connections`
-  或 MCP 增加新的连接推断规则。
-
 ## 还缺什么
 
-- 接入师兄训练的真实 model API；当前已能在服务器直接调用本地模型做闭环测试，
+- 真实 model API；当前已能在服务器直接调用本地模型做闭环测试，
   但还不是 API 服务形式。
 - `import_movies` 真实 live 创建还需要用户提供 movie 路径 `blob_paths` 和必要的
   gain reference 路径。
-- 防重复提交机制：已有同类型/同参数/同上游 Job 时应复用，不再新建。
 - interactive jobs 的人工确认流程。
-- 完整的 known workflow 知识库。
