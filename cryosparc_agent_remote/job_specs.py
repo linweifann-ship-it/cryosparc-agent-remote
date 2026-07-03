@@ -155,6 +155,7 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "interactive": False,
         "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
+            "compute_use_ssd": {"type": "boolean"},
             "refine_symmetry": {"type": "string"},
             "refine_defocus_refine": {"type": "boolean"},
             "refine_ctf_global_refine": {"type": "boolean"},

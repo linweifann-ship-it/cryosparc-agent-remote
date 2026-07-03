@@ -88,7 +88,11 @@ def build_internal_status_package(
 ) -> dict[str, Any]:
     """Summarize queue/running state for MCP bookkeeping, not model input."""
     monitoring = build_active_monitoring(node)
+    human_action = build_human_action(node)
     status_group = (
+        "human_action_required"
+        if human_action
+        else
         "attention_required"
         if monitoring["attention_required"]
         else "active" if node["status"] in ACTIVE_STATUSES else "unknown"
@@ -108,7 +112,12 @@ def build_internal_status_package(
         "updated_at": node["updated_at"],
         "outputs": summarize_outputs(node),
         "monitoring": monitoring,
+        "human_action_required": bool(human_action),
+        "human_action": human_action,
         "message": (
+            human_action["instruction"]
+            if human_action
+            else
             "Job needs human attention; keep this status inside MCP and do not "
             "ask the model for the next decision yet."
             if monitoring["attention_required"]
@@ -116,6 +125,22 @@ def build_internal_status_package(
                 "Job is not finished; keep this status inside MCP and do not ask "
                 "the model for the next decision yet."
             )
+        ),
+    }
+
+
+def build_human_action(node: dict[str, Any]) -> dict[str, Any] | None:
+    """Describe required human UI work for interactive jobs."""
+    if node["job_type"] != "select_2D":
+        return None
+    return {
+        "action_type": "cryosparc_interactive_selection",
+        "job_uid": node["cryosparc_job_uid"],
+        "job_type": node["job_type"],
+        "status": node["status"],
+        "instruction": (
+            f"Open CryoSPARC job {node['cryosparc_job_uid']} in the UI, "
+            "select good 2D classes in the Interactive tab, then finish the job."
         ),
     }
 

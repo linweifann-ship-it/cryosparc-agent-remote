@@ -19,6 +19,37 @@ def workflow_state(status: str = "completed") -> dict:
         "workflow_status": status,
         "nodes": [
             {
+                "workflow_node_id": "J7",
+                "logical_node_id": "node_inspect_picks_v2_001",
+                "cryosparc_job_uid": "J7",
+                "job_type": "inspect_picks_v2",
+                "title": "Inspect picks",
+                "status": "completed",
+                "updated_at": "2026-06-28T23:59:00+00:00",
+                "timestamps": {},
+                "parent_job_uids": [],
+                "parent_workflow_node_ids": [],
+                "parent_logical_node_ids": [],
+                "child_job_uids": ["J8"],
+                "child_workflow_node_ids": ["J8"],
+                "child_logical_node_ids": ["node_extract_micrographs_multi_001"],
+                "inputs": {},
+                "outputs": {
+                    "particles": {
+                        "type": "particle",
+                        "num_items": 176623,
+                        "available": True,
+                        "result_names": ["ctf", "location"],
+                        "summary_keys": [],
+                        "latest_summary_stat_keys": [],
+                    }
+                },
+                "key_parameters": {},
+                "runtime": {},
+                "has_error": False,
+                "has_warning": False,
+            },
+            {
                 "workflow_node_id": "J8",
                 "logical_node_id": "node_extract_micrographs_multi_001",
                 "cryosparc_job_uid": "J8",
@@ -26,6 +57,16 @@ def workflow_state(status: str = "completed") -> dict:
                 "title": "Extract from picks",
                 "status": status,
                 "updated_at": "2026-06-29T00:00:00+00:00",
+                "timestamps": {
+                    "created_at": "2026-06-29T00:00:00+00:00",
+                    "queued_at": "2026-06-29T00:01:00+00:00",
+                    "started_at": "2026-06-29T00:02:00+00:00",
+                    "running_at": "2026-06-29T00:03:00+00:00",
+                    "completed_at": "2026-06-29T00:04:00+00:00",
+                    "failed_at": None,
+                    "killed_at": None,
+                    "updated_at": "2026-06-29T00:04:00+00:00",
+                },
                 "parent_job_uids": ["J7"],
                 "parent_workflow_node_ids": ["J7"],
                 "parent_logical_node_ids": ["node_inspect_picks_v2_001"],
@@ -56,6 +97,15 @@ def workflow_state(status: str = "completed") -> dict:
                 "key_parameters": {
                     "box_size_pix": 400,
                     "compute_num_gpus": 4,
+                },
+                "runtime": {
+                    "work_dir": "J8",
+                    "lane": "g8m192_4090_slurm",
+                    "worker_hostname": None,
+                    "allocated_cpu": None,
+                    "allocated_gpu": None,
+                    "allocated_ram": None,
+                    "allocated_ssd": None,
                 },
                 "has_error": False,
                 "has_warning": False,
@@ -91,6 +141,30 @@ class ModelInputBuilderTests(unittest.TestCase):
         self.assertEqual(
             result["current_state"]["last_node_info"]["metrics"]["particles_count"],
             176623,
+        )
+        node_info = result["current_state"]["last_node_info"]
+        self.assertEqual(
+            node_info["timestamps"]["completed_at"],
+            "2026-06-29T00:04:00+00:00",
+        )
+        self.assertEqual(
+            node_info["runtime"]["lane"],
+            "g8m192_4090_slurm",
+        )
+        self.assertEqual(
+            result["current_state"]["recent_nodes"],
+            [
+                {
+                    "node_id": "J7",
+                    "job_type": "inspect_picks_v2",
+                    "status": "completed",
+                },
+                {
+                    "node_id": "J8",
+                    "job_type": "extract_micrographs_multi",
+                    "status": "completed",
+                },
+            ],
         )
 
     def test_running_job_returns_internal_status(self):
@@ -136,6 +210,44 @@ class ModelInputBuilderTests(unittest.TestCase):
         self.assertEqual(steps[0]["step_index"], 0)
         self.assertEqual(steps[0]["action"], "import_movies")
         self.assertEqual(steps[0]["parameter_template"], {"psize_A": 1.0})
+
+    def test_known_workflow_retriever_handles_cryosparc_jobs_dict(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "empiar-10025-workflow-standard.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "jobs": {
+                            "J14": {
+                                "jobType": "homo_abinit",
+                                "groups": [["J13.particles_selected", "particles"]],
+                                "parameters": {
+                                    "abinit_K": {"value": 1},
+                                },
+                            },
+                            "J1": {
+                                "jobType": "import_movies",
+                                "groups": [],
+                                "parameters": {
+                                    "psize_A": {"value": 0.6575},
+                                },
+                            },
+                        }
+                    }
+                )
+            )
+
+            steps = retrieve_known_workflow_steps(
+                {"empiar_id": "EMPIAR-10025"},
+                search_dirs=[tmpdir],
+            )
+
+        self.assertEqual(steps[0]["node_id"], "J1")
+        self.assertEqual(steps[0]["action"], "import_movies")
+        self.assertEqual(steps[0]["parameter_template"], {"psize_A": 0.6575})
+        self.assertEqual(steps[1]["node_id"], "J14")
+        self.assertEqual(steps[1]["action"], "homo_abinit")
+        self.assertEqual(steps[1]["upstream_node_ids"], ["J13"])
 
 
 if __name__ == "__main__":

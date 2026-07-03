@@ -239,8 +239,25 @@ def extract_job_node(
         "inputs": inputs,
         "outputs": outputs,
         "key_parameters": key_parameters,
+        "runtime": extract_runtime(job),
         "has_error": job.model.has_error,
         "has_warning": job.model.has_warning,
+    }
+
+
+def extract_runtime(job: Any) -> dict[str, Any]:
+    """Extract agreed runtime fields when CryoSPARC exposes them."""
+    model = job.model
+    return {
+        "work_dir": to_json_safe(getattr(model, "job_dir", None)),
+        "lane": to_json_safe(getattr(model, "queued_to_lane", None)),
+        "worker_hostname": to_json_safe(
+            getattr(model, "queued_to_hostname", None)
+        ),
+        "allocated_cpu": None,
+        "allocated_gpu": to_json_safe(getattr(model, "queued_to_gpu", None)),
+        "allocated_ram": None,
+        "allocated_ssd": None,
     }
 
 

@@ -45,6 +45,7 @@ def build_model_input_payload(
             "last_node_id": node["workflow_node_id"],
             "last_action": node["job_type"],
             "last_node_status": node["status"],
+            "recent_nodes": build_recent_nodes(workflow_state, node),
             "last_node_info": build_last_node_info(
                 node,
                 project_uid=project_uid,
@@ -68,6 +69,13 @@ def build_dataset_info(
         "num_of_maps": dataset_info.get("num_of_maps"),
         "abstract": dataset_info.get("abstract"),
         "known_workflow_steps": dataset_info.get("known_workflow_steps"),
+        "pixel_size_A": dataset_info.get("pixel_size_A"),
+        "accelerating_voltage_kv": dataset_info.get("accelerating_voltage_kv"),
+        "spherical_aberration_mm": dataset_info.get("spherical_aberration_mm"),
+        "total_exposure_dose_e_per_A2": dataset_info.get(
+            "total_exposure_dose_e_per_A2"
+        ),
+        "symmetry": dataset_info.get("symmetry"),
     }
     if dataset["known_workflow_steps"] is None:
         dataset["known_workflow_steps"] = retrieve_known_workflow_steps(
@@ -106,6 +114,7 @@ def build_not_started_payload(
             "last_node_id": None,
             "last_action": None,
             "last_node_status": "not_started",
+            "recent_nodes": [],
             "last_node_info": {
                 "job_type": None,
                 "job_uid": None,
@@ -113,18 +122,44 @@ def build_not_started_payload(
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "status": "not_started",
-                "timestamps": {},
+                "timestamps": empty_timestamps(),
                 "inputs": {"groups": []},
                 "parameters": {},
                 "outputs": {"groups": []},
                 "metrics": {},
-                "runtime": {},
+                "runtime": empty_runtime(),
                 "evidence_text": ["Workflow has not started yet."],
                 "warning_lines": [],
                 "image_refs": empty_image_refs(),
             },
         },
     }
+
+
+def build_recent_nodes(
+    workflow_state: dict[str, Any],
+    current_node: dict[str, Any],
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Summarize recent completed/failed jobs so the model can see context."""
+    current_number = job_uid_number(current_node["cryosparc_job_uid"])
+    prior_nodes = [
+        node
+        for node in workflow_state["nodes"]
+        if job_uid_number(node["cryosparc_job_uid"]) <= current_number
+    ]
+    recent = sorted(
+        prior_nodes,
+        key=lambda node: job_uid_number(node["cryosparc_job_uid"]),
+    )[-limit:]
+    return [
+        {
+            "node_id": node["workflow_node_id"],
+            "job_type": node["job_type"],
+            "status": node["status"],
+        }
+        for node in recent
+    ]
 
 
 def build_last_node_info(
@@ -140,18 +175,71 @@ def build_last_node_info(
         "project_uid": project_uid,
         "workspace_uid": workspace_uid,
         "status": node["status"],
-        "timestamps": {
-            "updated_at": node["updated_at"],
-        },
+        "timestamps": build_timestamps(node),
         "inputs": build_input_groups(node),
         "parameters": node["key_parameters"],
         "outputs": build_output_groups(node),
         "metrics": build_metrics(node),
-        "runtime": {},
+        "runtime": build_runtime(node),
         "evidence_text": build_evidence_text(node),
         "warning_lines": build_warning_lines(node),
         "image_refs": empty_image_refs(),
         "recent_batch_node_ids": node["parent_workflow_node_ids"],
+    }
+
+
+def build_timestamps(node: dict[str, Any]) -> dict[str, Any]:
+    """Expose the agreed timestamp fields, using null when unavailable."""
+    timestamps = node.get("timestamps") or {}
+    return {
+        "created_at": timestamps.get("created_at"),
+        "queued_at": timestamps.get("queued_at"),
+        "started_at": timestamps.get("started_at"),
+        "running_at": timestamps.get("running_at"),
+        "completed_at": timestamps.get("completed_at"),
+        "failed_at": timestamps.get("failed_at"),
+        "killed_at": timestamps.get("killed_at"),
+        "updated_at": timestamps.get("updated_at") or node["updated_at"],
+    }
+
+
+def empty_timestamps() -> dict[str, Any]:
+    """Return all agreed timestamp fields for not-started workflows."""
+    return {
+        "created_at": None,
+        "queued_at": None,
+        "started_at": None,
+        "running_at": None,
+        "completed_at": None,
+        "failed_at": None,
+        "killed_at": None,
+        "updated_at": None,
+    }
+
+
+def build_runtime(node: dict[str, Any]) -> dict[str, Any]:
+    """Expose agreed runtime/resource fields from the normalized node."""
+    runtime = node.get("runtime") or {}
+    result = empty_runtime()
+    result.update(
+        {
+            key: runtime.get(key)
+            for key in result
+        }
+    )
+    return result
+
+
+def empty_runtime() -> dict[str, Any]:
+    """Return all agreed runtime fields with null defaults."""
+    return {
+        "work_dir": None,
+        "lane": None,
+        "worker_hostname": None,
+        "allocated_cpu": None,
+        "allocated_gpu": None,
+        "allocated_ram": None,
+        "allocated_ssd": None,
     }
 
 

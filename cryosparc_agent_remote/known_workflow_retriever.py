@@ -119,10 +119,57 @@ def extract_steps(data: Any) -> list[Any]:
         value = data.get(key)
         if isinstance(value, list):
             return value
+        if key in {"jobs", "nodes"} and isinstance(value, dict):
+            return dict_steps(value)
     workflow = data.get("workflow")
     if isinstance(workflow, dict):
         return extract_steps(workflow)
     return []
+
+
+def dict_steps(steps_by_id: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert workflow job dictionaries into ordered step records."""
+    steps = []
+    for node_id, step in sorted(
+        steps_by_id.items(),
+        key=lambda item: node_sort_key(item[0]),
+    ):
+        if not isinstance(step, dict):
+            continue
+        converted = dict(step)
+        converted.setdefault("node_id", node_id)
+        converted.setdefault("job_type", step.get("jobType"))
+        converted.setdefault(
+            "upstream_node_ids",
+            [
+                str(group[0]).split(".", 1)[0]
+                for group in step.get("groups", [])
+                if isinstance(group, list) and group
+            ],
+        )
+        converted["parameters"] = normalize_parameter_values(
+            step.get("parameters") or {}
+        )
+        steps.append(converted)
+    return steps
+
+
+def normalize_parameter_values(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Collapse CryoSPARC workflow parameter records to raw values."""
+    result = {}
+    for name, value in parameters.items():
+        if isinstance(value, dict) and "value" in value:
+            result[name] = value["value"]
+        else:
+            result[name] = value
+    return result
+
+
+def node_sort_key(node_id: str) -> tuple[int, str]:
+    """Sort J-numbered workflow nodes in natural order."""
+    if node_id.startswith("J") and node_id[1:].isdigit():
+        return int(node_id[1:]), node_id
+    return 10**12, node_id
 
 
 def normalize_steps(steps: list[Any]) -> list[dict[str, Any]]:

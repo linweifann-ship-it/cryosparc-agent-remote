@@ -7,6 +7,7 @@ from action_registry import execute_model_decision_payload, get_candidate_action
 def adapt_v2_decision_to_internal(
     v2_decision: dict[str, Any],
     candidate_actions: list[dict[str, Any]],
+    current_node_id: str | None = None,
 ) -> dict[str, Any]:
     """Convert a V2 model decision into the internal schema v1 decision."""
     decision_type = v2_decision.get("decision_type")
@@ -41,39 +42,40 @@ def adapt_v2_decision_to_internal(
     issues = []
     for index, requested in enumerate(requested_actions):
         candidate = match_candidate(requested, candidate_actions)
-        if candidate is None:
-            issues.append(
-                issue(
-                    "candidate_not_found",
-                    (
-                        "No internal candidate action matches the V2 request "
-                        f"{requested!r}."
-                    ),
-                    f"selected_actions.{index}",
-                )
+        if candidate is not None:
+            selected_actions.append(
+                {
+                    "action_id": candidate["action_id"],
+                    "action_type": candidate["action_type"],
+                    "workflow_node_id": candidate["workflow_node_id"],
+                    "job_type": candidate["job_type"],
+                    "parameters": requested.get("parameters") or {},
+                    "connections": requested.get("connections"),
+                }
             )
             continue
         selected_actions.append(
-            {
-                "action_id": candidate["action_id"],
-                "action_type": candidate["action_type"],
-                "workflow_node_id": candidate["workflow_node_id"],
-                "job_type": candidate["job_type"],
-                "parameters": requested.get("parameters") or {},
-            }
+            build_generic_selected_action(requested, current_node_id, index)
         )
 
     if issues:
         return {"success": False, "issues": issues}
 
+    internal_decision_type = resolve_internal_decision_type(
+        decision_type,
+        selected_actions,
+    )
     return {
         "success": True,
         "internal_decision": {
             "schema_version": "1.0",
-            "decision_type": decision_type,
+            "decision_type": internal_decision_type,
             "selected_actions": selected_actions,
             "rollback_target": None,
-            "branch_plan": v2_decision.get("branch_plan"),
+            "branch_plan": build_branch_plan_if_needed(
+                internal_decision_type,
+                v2_decision,
+            ),
             "reason": v2_decision.get("reason") or "V2 model decision.",
             "confidence": v2_decision.get("confidence", 0.0),
             "risk_flags": v2_decision.get("risk_flags") or [],
@@ -98,6 +100,7 @@ def execute_v2_model_decision_payload(
     adapter_result = adapt_v2_decision_to_internal(
         v2_decision,
         candidate_context["candidate_actions"],
+        current_node_id=candidate_context["current_node_id"],
     )
     if not adapter_result["success"]:
         return {
@@ -126,6 +129,31 @@ def execute_v2_model_decision_payload(
         "execution_result": execution_result,
         "issues": execution_result.get("issues", []),
         "warnings": execution_result.get("warnings", []),
+    }
+
+
+def resolve_internal_decision_type(
+    v2_decision_type: str,
+    selected_actions: list[dict[str, Any]],
+) -> str:
+    """Map duplicate-child V2 forward choices to internal branch actions."""
+    action_types = {action["action_type"] for action in selected_actions}
+    if v2_decision_type == "forward" and action_types == {"branch"}:
+        return "branch"
+    return v2_decision_type
+
+
+def build_branch_plan_if_needed(
+    internal_decision_type: str,
+    v2_decision: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Provide a minimal branch_plan when MCP resolves duplicate references."""
+    if internal_decision_type != "branch":
+        return None
+    return v2_decision.get("branch_plan") or {
+        "branch_type": "single_candidate_from_duplicate_reference",
+        "max_parallel_branches": 1,
+        "notes": "MCP selected one matching internal candidate for a V2 forward decision.",
     }
 
 
@@ -167,10 +195,31 @@ def normalize_requested_actions(v2_decision: dict[str, Any]) -> list[dict[str, A
             "action": action,
             "job_type": v2_decision.get("job_type") or action,
             "parameters": v2_decision.get("parameters") or {},
+            "connections": v2_decision.get("connections"),
             "action_id": v2_decision.get("action_id"),
             "workflow_node_id": v2_decision.get("workflow_node_id"),
         }
     ]
+
+
+def build_generic_selected_action(
+    requested: dict[str, Any],
+    current_node_id: str | None,
+    index: int,
+) -> dict[str, Any]:
+    """Build an internal action when no candidate matched the model request."""
+    job_type = requested.get("job_type") or requested.get("action")
+    return {
+        "action_id": requested.get("action_id") or f"generic_{index}_{job_type}",
+        "action_type": requested.get("action_type") or "forward",
+        "workflow_node_id": (
+            requested.get("workflow_node_id")
+            or f"{current_node_id or 'current'}:{job_type}"
+        ),
+        "job_type": job_type,
+        "parameters": requested.get("parameters") or {},
+        "connections": requested.get("connections"),
+    }
 
 
 def match_candidate(
@@ -204,7 +253,41 @@ def match_candidate(
     ]
     if len(matches) == 1:
         return matches[0]
+    if len(matches) > 1:
+        return select_preferred_candidate(matches)
     return None
+
+
+def select_preferred_candidate(
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Break V2 job-type ties using completed, earliest reference jobs first."""
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            status_rank(candidate.get("reference_status")),
+            job_uid_number(candidate.get("reference_job_uid") or ""),
+            candidate["action_id"],
+        ),
+    )[0]
+
+
+def status_rank(status: str | None) -> int:
+    """Prefer validated completed references over active or failed duplicates."""
+    if status == "completed":
+        return 0
+    if status in {"queued", "launched", "started", "running"}:
+        return 1
+    if status in {"failed", "killed"}:
+        return 3
+    return 2
+
+
+def job_uid_number(job_uid: str) -> int:
+    """Extract the numeric part of CryoSPARC job IDs for stable sorting."""
+    if job_uid.startswith("J") and job_uid[1:].isdigit():
+        return int(job_uid[1:])
+    return 10**12
 
 
 def summarize_candidate_context(candidate_context: dict[str, Any]) -> dict[str, Any]:
@@ -219,6 +302,7 @@ def summarize_candidate_context(candidate_context: dict[str, Any]) -> dict[str, 
                 "action_id": candidate["action_id"],
                 "action_type": candidate["action_type"],
                 "workflow_node_id": candidate["workflow_node_id"],
+                "reference_status": candidate.get("reference_status"),
                 "job_type": candidate["job_type"],
             }
             for candidate in candidate_context["candidate_actions"]

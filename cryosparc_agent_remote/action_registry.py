@@ -9,6 +9,7 @@ from schemas import (
     ValidationResult,
     parse_model_decision,
 )
+from cryosparc_client import cryosparc_client
 from job_executor import execute_job_action, plan_job_action
 from job_specs import get_parameter_template
 from workflow_state import content_hash, extract_workflow_state, find_node
@@ -36,6 +37,7 @@ def get_candidate_actions(
     candidate_actions, blocked_actions = generate_candidate_actions(
         workflow_state,
         canonical_current_node_id,
+        project_uid=project_uid,
     )
     return {
         "schema_version": "1.0",
@@ -55,6 +57,7 @@ def get_candidate_actions(
 def generate_candidate_actions(
     workflow_state: dict[str, Any],
     current_node_id: str | None,
+    project_uid: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Turn the selected node's child jobs into forward or branch candidates."""
     if not current_node_id:
@@ -97,9 +100,175 @@ def generate_candidate_actions(
         else:
             blocked.append(action)
 
+    synthetic_actions, synthetic_blocked = build_synthetic_next_actions(
+        workflow_state,
+        current_node,
+        project_uid=project_uid,
+    )
+    candidates.extend(synthetic_actions)
+    blocked.extend(synthetic_blocked)
+
     candidates.sort(key=lambda action: action["action_id"])
     blocked.sort(key=lambda action: action["action_id"])
     return candidates, blocked
+
+
+def build_synthetic_next_actions(
+    workflow_state: dict[str, Any],
+    current_node: dict[str, Any],
+    project_uid: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create safe next-step candidates when no child job exists yet."""
+    if current_node["status"] != "completed":
+        return [], []
+    if current_node["job_type"] == "homo_refine_new":
+        return build_parallel_homo_refine_actions(current_node)
+    if current_node["job_type"] != "select_2D":
+        return [], []
+    particles = current_node["outputs"].get("particles_selected")
+    if not particles or not particles["available"]:
+        return [], [
+            build_synthetic_homo_refine_candidate(
+                current_node,
+                required_inputs={},
+                blocked_by=["Current select_2D job has no particles_selected output."],
+            )
+        ]
+
+    volume_source = find_completed_volume_source(workflow_state, project_uid)
+    required_inputs = {
+        "particles": [
+            {
+                "source_workflow_node_id": current_node["workflow_node_id"],
+                "source_logical_node_id": current_node["logical_node_id"],
+                "source_job_uid": current_node["cryosparc_job_uid"],
+                "source_output": "particles_selected",
+                "result_names": particles["result_names"],
+            }
+        ],
+    }
+    blocked_by = []
+    if volume_source:
+        required_inputs["volume"] = [volume_source]
+    else:
+        blocked_by.append(
+            "No completed imported volume output was found in this workspace or project."
+        )
+
+    action = build_synthetic_homo_refine_candidate(
+        current_node,
+        required_inputs=required_inputs,
+        blocked_by=blocked_by,
+    )
+    return ([action], []) if action["available"] else ([], [action])
+
+
+def build_parallel_homo_refine_actions(
+    current_node: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Allow another homogeneous refinement using the same upstream inputs."""
+    required_inputs = {
+        name: connections
+        for name, connections in current_node["inputs"].items()
+        if name in {"particles", "volume", "mask"} and connections
+    }
+    blocked_by = []
+    if "particles" not in required_inputs:
+        blocked_by.append("Current homo_refine_new job has no particles input.")
+    if "volume" not in required_inputs:
+        blocked_by.append("Current homo_refine_new job has no volume input.")
+
+    action = build_synthetic_homo_refine_candidate(
+        current_node,
+        required_inputs=required_inputs,
+        blocked_by=blocked_by,
+        description=(
+            "Create another homogeneous refinement job in parallel using the "
+            "same upstream particles and volume inputs."
+        ),
+    )
+    return ([action], []) if action["available"] else ([], [action])
+
+
+def build_synthetic_homo_refine_candidate(
+    current_node: dict[str, Any],
+    required_inputs: dict[str, list[dict[str, Any]]],
+    blocked_by: list[str],
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Build a synthetic homo_refine_new creation candidate."""
+    job_type = "homo_refine_new"
+    return {
+        "action_id": f"forward_{current_node['cryosparc_job_uid']}_homo_refine_new",
+        "action_type": "forward",
+        "workflow_node_id": f"{current_node['workflow_node_id']}:homo_refine_new",
+        "reference_job_uid": None,
+        "reference_status": None,
+        "job_type": job_type,
+        "description": description or (
+            "Create a new homogeneous refinement job from selected particles "
+            "and an available imported volume."
+        ),
+        "execution_mode": "create_job",
+        "available": not blocked_by,
+        "blocked_by": blocked_by,
+        "required_inputs": required_inputs,
+        "parameter_template": get_parameter_template(job_type),
+        "default_parameters": {},
+    }
+
+
+def find_completed_volume_source(
+    workflow_state: dict[str, Any],
+    project_uid: str | None,
+) -> dict[str, Any] | None:
+    """Find a completed imported volume in the workspace or parent project."""
+    for node in workflow_state["nodes"]:
+        source = volume_source_from_node(node)
+        if source:
+            return source
+    if not project_uid:
+        return None
+    try:
+        cs = cryosparc_client()
+        jobs = sorted(
+            cs.find_jobs(project_uid=project_uid),
+            key=lambda job: int(job.uid[1:]) if job.uid.startswith("J") and job.uid[1:].isdigit() else 10**12,
+        )
+    except Exception:
+        return None
+    for job in jobs:
+        if job.status != "completed":
+            continue
+        for output_name, output in job.outputs.items():
+            if output_name.startswith("imported_volume") and output.num_items > 0:
+                return {
+                    "source_workflow_node_id": job.uid,
+                    "source_logical_node_id": None,
+                    "source_job_uid": job.uid,
+                    "source_output": output_name,
+                    "result_names": sorted(
+                        result.name
+                        for result in output.results
+                    ),
+                }
+    return None
+
+
+def volume_source_from_node(node: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a volume output from a normalized completed job node."""
+    if node["status"] != "completed":
+        return None
+    for output_name, output in node["outputs"].items():
+        if output_name.startswith("imported_volume") and output["available"]:
+            return {
+                "source_workflow_node_id": node["workflow_node_id"],
+                "source_logical_node_id": node["logical_node_id"],
+                "source_job_uid": node["cryosparc_job_uid"],
+                "source_output": output_name,
+                "result_names": output["result_names"],
+            }
+    return None
 
 
 def build_candidate_action(
@@ -144,6 +313,7 @@ def build_candidate_action(
         "action_type": action_type,
         "workflow_node_id": target_node["workflow_node_id"],
         "reference_job_uid": target_node["cryosparc_job_uid"],
+        "reference_status": target_node["status"],
         "job_type": target_node["job_type"],
         "description": (
             f"Reproduce the validated P2-W3 workflow node "
@@ -317,6 +487,7 @@ def build_execution_plan(
                 "approval_required": False,
                 "approval_reasons": [],
                 "resolved_parameters": action["resolved_parameters"],
+                "connections": action.get("connections"),
                 "rollback_target": None,
                 "status": "planned",
             }
@@ -410,7 +581,7 @@ def validate_decision_against_registry(
     decision: ModelDecision,
     candidate_actions: list[dict[str, Any]] | None = None,
 ) -> ValidationResult:
-    """Check that selected actions are present in the candidate registry."""
+    """Validate actions, using candidates as optional helpers."""
     issues: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
     resolved_actions: list[ResolvedAction] = []
@@ -463,51 +634,51 @@ def validate_action_against_candidates(
     issues: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
     path = f"selected_actions.{index}"
-    candidate = candidates_by_id.get(action.action_id)
+    candidate = candidates_by_id.get(action.action_id or "")
 
-    if candidate is None:
-        issues.append(
+    if candidate is not None:
+        for field_name in ("action_type", "workflow_node_id", "job_type"):
+            expected = candidate[field_name]
+            actual = getattr(action, field_name)
+            if actual != expected:
+                issues.append(
+                    ValidationIssue(
+                        code=f"{field_name}_mismatch",
+                        message=(
+                            f"{field_name} must be {expected!r} for "
+                            f"action_id {action.action_id!r}"
+                        ),
+                        path=f"{path}.{field_name}",
+                    )
+                )
+        parameter_template = candidate["parameter_template"]
+        execution_mode = candidate["execution_mode"]
+    else:
+        parameter_template = get_parameter_template(action.job_type)
+        execution_mode = "create_job"
+        warnings.append(
             ValidationIssue(
-                code="unknown_action_id",
+                severity="warning",
+                code="generic_action_without_candidate",
                 message=(
-                    f"action_id {action.action_id!r} is not in the supplied "
-                    "candidate_actions"
+                    f"job_type {action.job_type!r} did not match an internal "
+                    "candidate; MCP will plan it as a generic CryoSPARC job."
                 ),
-                path=f"{path}.action_id",
+                path=path,
             )
         )
-        return issues, warnings, None
-
-    for field_name in ("action_type", "workflow_node_id", "job_type"):
-        expected = candidate[field_name]
-        actual = getattr(action, field_name)
-        if actual != expected:
-            issues.append(
-                ValidationIssue(
-                    code=f"{field_name}_mismatch",
-                    message=(
-                        f"{field_name} must be {expected!r} for "
-                        f"action_id {action.action_id!r}"
-                    ),
-                    path=f"{path}.{field_name}",
-                )
-            )
 
     parameter_issues, resolved_parameters = validate_parameters(
         action.parameters,
-        candidate["parameter_template"],
+        parameter_template,
         path=f"{path}.parameters",
     )
-    issues.extend(parameter_issues)
-
-    warnings.append(
-        ValidationIssue(
-            severity="warning",
-            code="dry_run_only_action",
-            message=f"job_type {action.job_type!r} is registered for validation only",
-            path=path,
-        )
-    )
+    for parameter_issue in parameter_issues:
+        if parameter_issue.code == "unknown_parameter":
+            parameter_issue.severity = "warning"
+            warnings.append(parameter_issue)
+        else:
+            issues.append(parameter_issue)
 
     if issues:
         return issues, warnings, None
@@ -516,12 +687,13 @@ def validate_action_against_candidates(
         issues,
         warnings,
         ResolvedAction(
-            action_id=action.action_id,
+            action_id=action.action_id or f"generic_{index}_{action.job_type}",
             action_type=action.action_type,
-            workflow_node_id=action.workflow_node_id,
+            workflow_node_id=action.workflow_node_id or f"generic:{action.job_type}",
             job_type=action.job_type,
-            execution_mode=candidate["execution_mode"],
+            execution_mode=execution_mode,
             resolved_parameters=resolved_parameters,
+            connections=action.connections,
             mcp_tool_name=None,
         ),
     )
@@ -542,7 +714,7 @@ def validate_parameters(
     resolved.update(parameters)
 
     for name, spec in template.items():
-        if spec.get("required") and name not in resolved:
+        if spec.get("required") and resolved.get(name) is None:
             issues.append(
                 ValidationIssue(
                     code="missing_required_parameter",
@@ -552,6 +724,8 @@ def validate_parameters(
             )
 
     for name, value in parameters.items():
+        if value is None:
+            continue
         spec = template.get(name)
         if spec is None:
             issues.append(

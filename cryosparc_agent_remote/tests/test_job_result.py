@@ -6,7 +6,11 @@ from unittest.mock import patch
 from job_result import get_job_result_package
 
 
-def workflow_state(status: str, old_active: bool = False) -> dict:
+def workflow_state(
+    status: str,
+    old_active: bool = False,
+    job_type: str = "extract_micrographs_multi",
+) -> dict:
     """Return a minimal normalized workflow state containing one test job."""
     started_at = (
         datetime.now(timezone.utc) - timedelta(hours=24)
@@ -25,7 +29,7 @@ def workflow_state(status: str, old_active: bool = False) -> dict:
                 "workflow_node_id": "J30",
                 "logical_node_id": "node_extract_micrographs_multi_002",
                 "cryosparc_job_uid": "J30",
-                "job_type": "extract_micrographs_multi",
+                "job_type": job_type,
                 "title": "Agent forward_J8",
                 "status": status,
                 "updated_at": "2026-06-27T00:00:00+00:00",
@@ -114,6 +118,22 @@ class JobResultPackageTests(unittest.TestCase):
         self.assertIn(
             "no_registered_output_progress",
             result["monitoring"]["flags"],
+        )
+
+    def test_select_2d_waiting_requires_human_action(self):
+        with patch(
+            "job_result.extract_workflow_state",
+            return_value=workflow_state("waiting", job_type="select_2D"),
+        ):
+            result = get_job_result_package("P2", "W3", "J30")
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["ready_for_model"])
+        self.assertEqual(result["status_group"], "human_action_required")
+        self.assertTrue(result["human_action_required"])
+        self.assertEqual(
+            result["human_action"]["action_type"],
+            "cryosparc_interactive_selection",
         )
 
     def test_completed_job_returns_model_result_package(self):
