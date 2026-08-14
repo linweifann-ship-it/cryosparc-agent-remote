@@ -16,7 +16,7 @@ def get_job_result_package(
     project_uid: str,
     workspace_uid: str,
     job_uid: str,
-    include_next_candidates: bool = True,
+    include_next_candidates: bool = False,
 ) -> dict[str, Any]:
     """Return an internal status or model-facing result package for one job."""
     workflow_state = extract_workflow_state(project_uid, workspace_uid)
@@ -56,7 +56,7 @@ def wait_for_job_result_package(
     job_uid: str,
     timeout_seconds: int = 0,
     poll_interval_seconds: int = 30,
-    include_next_candidates: bool = True,
+    include_next_candidates: bool = False,
 ) -> dict[str, Any]:
     """Poll CryoSPARC until a job reaches a terminal state or the timeout expires."""
     deadline = monotonic() + max(timeout_seconds, 0)
@@ -155,7 +155,7 @@ def build_model_result_package(
         "success": node["status"] in SUCCESS_STATUSES,
         "ready_for_model": True,
         "internal_only": False,
-        "schema_version": "1.0",
+        "schema_version": "2.1",
         "message_type": "mcp_job_result",
         "task": "Review the finished CryoSPARC job and choose the next workflow action.",
         "project_uid": workflow_state["project_uid"],
@@ -166,6 +166,9 @@ def build_model_result_package(
         "title": node["title"],
         "status": node["status"],
         "updated_at": node["updated_at"],
+        "timestamps": node.get("timestamps") or {},
+        "runtime": node.get("runtime") or {},
+        "run_errors": node.get("run_errors") or {},
         "has_error": node["has_error"],
         "has_warning": node["has_warning"],
         "inputs": node["inputs"],
@@ -182,33 +185,37 @@ def build_model_result_package(
                 "status": node["status"],
             },
         },
-        "next_candidate_actions": [],
-        "blocked_actions": [],
         "output_contract": {
             "return_json_only": True,
-            "schema_version": "1.0",
-            "allowed_decision_type": ["forward", "rollback", "branch", "stop"],
-            "selected_actions_rule": (
-                "Every selected action_id must come from next_candidate_actions."
+            "schema_version": "3.0",
+            "output_style": "minimal_v3",
+            "allowed_decision_type": ["forward", "branch", "stop"],
+            "decision_rule": (
+                "Choose one allowed decision_type. For forward or branch, return "
+                "selected_actions with only job_type and parameters. MCP resolves "
+                "CryoSPARC input connections."
             ),
-            "rollback_modes": [
-                "mark_only",
-                "rerun_from_target",
-                "branch_from_target",
-                "manual_review",
+            "selected_action_fields": [
+                "job_type",
+                "parameters",
+            ],
+            "forbidden_fields": [
+                "decision",
+                "next_action",
+                "action",
+                "reason",
+                "explanation",
+                "confidence",
+                "evidence",
+                "rollback_target",
+                "branch_plan",
+                "workflow_node_id",
+                "connections",
             ],
         },
     }
 
-    if include_next_candidates and node["status"] == "completed":
-        candidate_context = get_next_candidate_context(
-            workflow_state["project_uid"],
-            workflow_state["workspace_uid"],
-            node["workflow_node_id"],
-        )
-        package["next_candidate_actions"] = candidate_context["candidate_actions"]
-        package["blocked_actions"] = candidate_context["blocked_actions"]
-        package["decision_hint"] = candidate_context["decision_hint"]
+    _ = include_next_candidates
 
     return package
 

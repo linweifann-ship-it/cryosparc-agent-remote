@@ -240,6 +240,7 @@ def extract_job_node(
         "outputs": outputs,
         "key_parameters": key_parameters,
         "runtime": extract_runtime(job),
+        "run_errors": extract_run_errors(job),
         "has_error": job.model.has_error,
         "has_warning": job.model.has_warning,
     }
@@ -258,6 +259,16 @@ def extract_runtime(job: Any) -> dict[str, Any]:
         "allocated_gpu": to_json_safe(getattr(model, "queued_to_gpu", None)),
         "allocated_ram": None,
         "allocated_ssd": None,
+    }
+
+
+def extract_run_errors(job: Any) -> dict[str, Any]:
+    """Extract raw CryoSPARC API error fields without interpreting them."""
+    model = job.model
+    return {
+        "errors_run": to_json_safe(getattr(model, "errors_run", None)),
+        "errors_build_inputs": to_json_safe(getattr(model, "errors_build_inputs", None)),
+        "errors_build_params": to_json_safe(getattr(model, "errors_build_params", None)),
     }
 
 

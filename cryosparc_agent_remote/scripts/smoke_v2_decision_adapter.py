@@ -24,15 +24,13 @@ def main() -> None:
     """Print the adapted internal decision and execution result."""
     args = parse_args()
     decision = {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "decision_type": "forward",
-        "action": args.action,
-        "parameters": json.loads(args.parameters_json),
-        "reason": "Smoke test for V2 decision adapter.",
-        "confidence": 0.9,
-        "risk_flags": [],
-        "evidence": [
-            f"Current node {args.current_node} is used as the decision anchor."
+        "selected_actions": [
+            {
+                "job_type": args.action,
+                "parameters": json.loads(args.parameters_json),
+            }
         ],
     }
     result = execute_v2_model_decision_payload(

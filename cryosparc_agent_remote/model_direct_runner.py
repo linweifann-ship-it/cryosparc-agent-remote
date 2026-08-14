@@ -13,40 +13,38 @@ DEFAULT_SYSTEM_PROMPT = (
 def build_workflow_decision_prompt(model_input: dict[str, Any]) -> list[dict[str, str]]:
     """Build chat messages for the direct model closed-loop test."""
     output_contract = {
-        "schema_version": "2.0",
-        "decision_type": "forward | branch | rollback | stop",
-        "action": "CryoSPARC job type for forward/branch decisions, or omit for stop.",
-        "parameters": "Only parameters that should override defaults.",
-        "reason": "Short reason for the decision.",
-        "confidence": "Number from 0.0 to 1.0.",
-        "risk_flags": [],
-        "evidence": [],
+        "schema_version": "3.0",
+        "decision_type": "forward | branch | stop",
+        "selected_actions": [
+            {
+                "job_type": "CryoSPARC job type for forward/branch decisions.",
+                "parameters": "Only parameters that should override defaults.",
+            }
+        ],
     }
     user_content = {
         "instruction": (
             "Choose the next workflow action from the current CryoSPARC state. "
-            "If the next step is unclear, return a stop decision."
+            "MCP resolves job input connections. If the next step is unclear, "
+            "return a stop decision with selected_actions=[]."
         ),
         "model_input": model_input,
         "output_contract": output_contract,
         "valid_examples": [
             {
-                "schema_version": "2.0",
+                "schema_version": "3.0",
                 "decision_type": "forward",
-                "action": "class_2D_new",
-                "parameters": {"compute_num_gpus": 4, "class2D_K": 50},
-                "reason": "Particles are extracted and ready for 2D classification.",
-                "confidence": 0.85,
-                "risk_flags": [],
-                "evidence": ["The last job completed with a particles output."],
+                "selected_actions": [
+                    {
+                        "job_type": "class_2D_new",
+                        "parameters": {"compute_num_gpus": 4, "class2D_K": 50},
+                    }
+                ],
             },
             {
-                "schema_version": "2.0",
+                "schema_version": "3.0",
                 "decision_type": "stop",
-                "reason": "No safe next action is clear from the current state.",
-                "confidence": 0.5,
-                "risk_flags": ["needs_human_review"],
-                "evidence": [],
+                "selected_actions": [],
             },
         ],
     }

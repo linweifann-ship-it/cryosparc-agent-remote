@@ -11,14 +11,14 @@ from model_direct_runner import (
 class ModelDirectRunnerTests(unittest.TestCase):
     def test_parse_plain_json(self):
         result = parse_model_decision_text(
-            '{"schema_version":"2.0","decision_type":"stop","reason":"done"}'
+            '{"schema_version":"3.0","decision_type":"stop","selected_actions":[]}'
         )
 
         self.assertEqual(result["decision_type"], "stop")
 
     def test_parse_markdown_wrapped_json(self):
         result = parse_model_decision_text(
-            '```json\n{"schema_version":"2.0","decision_type":"forward"}\n```'
+            '```json\n{"schema_version":"3.0","decision_type":"forward","selected_actions":[]}\n```'
         )
 
         self.assertEqual(result["decision_type"], "forward")
@@ -26,17 +26,17 @@ class ModelDirectRunnerTests(unittest.TestCase):
     def test_parse_output_after_thinking_text(self):
         result = parse_model_decision_text(
             "/think hidden notes\n"
-            '{"schema_version":"2.0","decision_type":"stop","reason":"review"}'
+            '{"schema_version":"3.0","decision_type":"stop","selected_actions":[]}'
         )
 
-        self.assertEqual(result["reason"], "review")
+        self.assertEqual(result["selected_actions"], [])
 
     def test_prompt_contains_v2_context_and_contract(self):
         messages = build_workflow_decision_prompt(
             {
-                "schema_version": "2.0",
+                "schema_version": "2.1",
                 "task_type": "workflow_decision",
-                "dataset_info": {},
+                "dataset_context": {},
                 "current_state": {"last_node_id": "J8"},
             }
         )

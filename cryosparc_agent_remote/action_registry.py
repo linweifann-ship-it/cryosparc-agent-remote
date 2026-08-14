@@ -11,7 +11,7 @@ from schemas import (
 )
 from cryosparc_client import cryosparc_client
 from job_executor import execute_job_action, plan_job_action
-from job_specs import get_parameter_template
+from job_specs import get_job_spec, get_parameter_template
 from workflow_state import content_hash, extract_workflow_state, find_node
 
 
@@ -123,6 +123,29 @@ def build_synthetic_next_actions(
         return [], []
     if current_node["job_type"] == "homo_refine_new":
         return build_parallel_homo_refine_actions(current_node)
+    micrograph_source = micrograph_source_from_node(current_node)
+    if micrograph_source:
+        template_source = find_available_template_source(
+            workflow_state,
+            current_node,
+        )
+        actions = [
+            build_synthetic_blob_picker_candidate(
+                current_node,
+                micrograph_source,
+            )
+        ]
+        template_picker = build_synthetic_template_picker_candidate(
+            current_node,
+            micrograph_source,
+            template_source,
+        )
+        blocked = []
+        if template_picker["available"]:
+            actions.append(template_picker)
+        else:
+            blocked.append(template_picker)
+        return actions, blocked
     if current_node["job_type"] != "select_2D":
         return [], []
     particles = current_node["outputs"].get("particles_selected")
@@ -161,6 +184,132 @@ def build_synthetic_next_actions(
         blocked_by=blocked_by,
     )
     return ([action], []) if action["available"] else ([], [action])
+
+
+def micrograph_source_from_node(node: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a usable micrograph-like output from a completed workflow node."""
+    if node["status"] != "completed":
+        return None
+    for output_name in ("exposures", "micrographs", "imported_micrographs"):
+        output = node["outputs"].get(output_name)
+        if not output or not output["available"]:
+            continue
+        result_names = output.get("result_names") or []
+        if "micrograph_blob" not in result_names:
+            continue
+        return {
+            "source_workflow_node_id": node["workflow_node_id"],
+            "source_logical_node_id": node["logical_node_id"],
+            "source_job_uid": node["cryosparc_job_uid"],
+            "source_output": output_name,
+            "result_names": result_names,
+        }
+    return None
+
+
+def find_available_template_source(
+    workflow_state: dict[str, Any],
+    current_node: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a usable template-like output from the current workflow."""
+    current_source = template_source_from_node(current_node)
+    if current_source:
+        return current_source
+    for node in workflow_state["nodes"]:
+        if node["cryosparc_job_uid"] == current_node["cryosparc_job_uid"]:
+            continue
+        source = template_source_from_node(node)
+        if source:
+            return source
+    return None
+
+
+def template_source_from_node(node: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a template-like output from a completed workflow node."""
+    if node["status"] != "completed":
+        return None
+    for output_name, output in node["outputs"].items():
+        if not output or not output["available"]:
+            continue
+        if output_name not in {"templates", "templates_selected"}:
+            continue
+        result_names = output.get("result_names") or []
+        return {
+            "source_workflow_node_id": node["workflow_node_id"],
+            "source_logical_node_id": node["logical_node_id"],
+            "source_job_uid": node["cryosparc_job_uid"],
+            "source_output": output_name,
+            "result_names": result_names,
+        }
+    return None
+
+
+def build_synthetic_blob_picker_candidate(
+    current_node: dict[str, Any],
+    micrograph_source: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a generic blob_picker_gpu candidate from available micrographs."""
+    job_type = "blob_picker_gpu"
+    return {
+        "action_id": f"forward_{current_node['cryosparc_job_uid']}_blob_picker_gpu",
+        "action_type": "forward",
+        "workflow_node_id": f"{current_node['workflow_node_id']}:blob_picker_gpu",
+        "reference_job_uid": None,
+        "reference_status": None,
+        "job_type": job_type,
+        "description": (
+            "Create a Blob Picker job from the current available micrographs."
+        ),
+        "execution_mode": "create_job",
+        "available": True,
+        "blocked_by": [],
+        "required_inputs": {"micrographs": [micrograph_source]},
+        "missing_required_inputs": [],
+        "parameter_template": get_parameter_template(job_type),
+        "default_parameters": {},
+    }
+
+
+def build_synthetic_template_picker_candidate(
+    current_node: dict[str, Any],
+    micrograph_source: dict[str, Any],
+    template_source: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a Template Picker candidate when templates are available."""
+    job_type = "template_picker_gpu"
+    required_inputs = {
+        "micrographs": [micrograph_source],
+        "templates": [template_source] if template_source else [],
+    }
+    blocked_by = []
+    missing_required_inputs = []
+    if not template_source:
+        blocked_by.append(
+            "Required input templates has no available source in the current branch."
+        )
+        missing_required_inputs.append("templates")
+    return {
+        "action_id": (
+            f"forward_{current_node['cryosparc_job_uid']}_template_picker_gpu"
+            if template_source
+            else f"blocked_{current_node['cryosparc_job_uid']}_template_picker_gpu"
+        ),
+        "action_type": "forward",
+        "workflow_node_id": f"{current_node['workflow_node_id']}:template_picker_gpu",
+        "reference_job_uid": None,
+        "reference_status": None,
+        "job_type": job_type,
+        "description": (
+            "Template Picker requires templates in addition to micrographs."
+        ),
+        "execution_mode": "create_job",
+        "available": template_source is not None,
+        "blocked_by": blocked_by,
+        "required_inputs": required_inputs,
+        "missing_required_inputs": missing_required_inputs,
+        "parameter_template": get_parameter_template(job_type),
+        "default_parameters": {},
+    }
 
 
 def build_parallel_homo_refine_actions(
@@ -282,6 +431,10 @@ def build_candidate_action(
 
     for input_name, connections in target_node["inputs"].items():
         required_inputs[input_name] = connections
+        if not connections:
+            blocked_by.append(
+                f"Required input {input_name} has no available source."
+            )
         for connection in connections:
             source_node = find_node(
                 workflow_state,
@@ -342,8 +495,46 @@ def build_parameter_template(
 def validate_model_decision_payload(
     payload: dict[str, Any],
     candidate_actions: list[dict[str, Any]] | None = None,
+    allow_internal_schema: bool = False,
 ) -> dict[str, Any]:
     """Validate a model decision without creating or enqueueing CryoSPARC jobs."""
+    if payload.get("schema_version") == "3.0":
+        from v2_decision_adapter import adapt_v2_decision_to_internal
+
+        adapter_result = adapt_v2_decision_to_internal(
+            payload,
+            candidate_actions or [],
+        )
+        if not adapter_result["success"]:
+            result = ValidationResult(
+                success=False,
+                valid_schema=False,
+                valid_actions=False,
+                issues=[
+                    ValidationIssue.model_validate(issue)
+                    for issue in adapter_result.get("issues", [])
+                ],
+            )
+            return result.model_dump()
+        payload = adapter_result["internal_decision"]
+    elif not allow_internal_schema:
+        result = ValidationResult(
+            success=False,
+            valid_schema=False,
+            valid_actions=False,
+            issues=[
+                ValidationIssue(
+                    code="unsupported_schema_version",
+                    message=(
+                        "Model-facing decisions must use schema_version '3.0' "
+                        "with minimal_v3 selected_actions."
+                    ),
+                    path="schema_version",
+                )
+            ],
+        )
+        return result.model_dump()
+
     decision, schema_issues = parse_model_decision(payload)
     if decision is None:
         result = ValidationResult(
@@ -368,6 +559,8 @@ def execute_model_decision_payload(
     dry_run: bool = True,
     project_uid: str | None = None,
     workspace_uid: str | None = None,
+    allow_approval_required_create: bool = False,
+    allow_internal_schema: bool = False,
 ) -> dict[str, Any]:
     """
     Convert a validated decision into an execution plan.
@@ -379,6 +572,7 @@ def execute_model_decision_payload(
     validation = validate_model_decision_payload(
         payload,
         candidate_actions=candidate_actions,
+        allow_internal_schema=allow_internal_schema,
     )
     if not validation["success"]:
         return {
@@ -434,6 +628,7 @@ def execute_model_decision_payload(
             workspace_uid=workspace_uid,
             planned_action=action,
             dry_run=False,
+            allow_approval_required_create=allow_approval_required_create,
         )
         for action in execution_plan["actions"]
     ]
@@ -487,7 +682,6 @@ def build_execution_plan(
                 "approval_required": False,
                 "approval_reasons": [],
                 "resolved_parameters": action["resolved_parameters"],
-                "connections": action.get("connections"),
                 "rollback_target": None,
                 "status": "planned",
             }
@@ -605,6 +799,7 @@ def validate_decision_against_registry(
             validate_action_against_candidates(
                 action,
                 candidates_by_id,
+                candidate_actions or [],
                 idx,
             )
         )
@@ -628,13 +823,14 @@ def validate_decision_against_registry(
 def validate_action_against_candidates(
     action: Action,
     candidates_by_id: dict[str, dict[str, Any]],
+    candidate_actions: list[dict[str, Any]],
     index: int,
 ) -> tuple[list[ValidationIssue], list[ValidationIssue], ResolvedAction | None]:
     """Validate one selected action and resolve its final parameters."""
     issues: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
     path = f"selected_actions.{index}"
-    candidate = candidates_by_id.get(action.action_id or "")
+    candidate = resolve_candidate_for_action(action, candidates_by_id, candidate_actions)
 
     if candidate is not None:
         for field_name in ("action_type", "workflow_node_id", "job_type"):
@@ -654,7 +850,8 @@ def validate_action_against_candidates(
         parameter_template = candidate["parameter_template"]
         execution_mode = candidate["execution_mode"]
     else:
-        parameter_template = get_parameter_template(action.job_type)
+        spec = get_job_spec(action.job_type)
+        parameter_template = spec["parameter_template"]
         execution_mode = "create_job"
         warnings.append(
             ValidationIssue(
@@ -667,6 +864,20 @@ def validate_action_against_candidates(
                 path=path,
             )
         )
+        required_inputs = spec.get("required_inputs") or []
+        if required_inputs:
+            issues.append(
+                ValidationIssue(
+                    code="connection_resolution_failed",
+                    message=(
+                        f"MCP could not resolve required input connections for "
+                        f"job_type {action.job_type!r}; missing_inputs="
+                        f"{required_inputs!r}; available_upstream_outputs="
+                        f"{summarize_candidate_outputs(candidate_actions)!r}."
+                    ),
+                    path=f"{path}.job_type",
+                )
+            )
 
     parameter_issues, resolved_parameters = validate_parameters(
         action.parameters,
@@ -687,16 +898,62 @@ def validate_action_against_candidates(
         issues,
         warnings,
         ResolvedAction(
-            action_id=action.action_id or f"generic_{index}_{action.job_type}",
-            action_type=action.action_type,
-            workflow_node_id=action.workflow_node_id or f"generic:{action.job_type}",
+            action_id=(
+                candidate["action_id"]
+                if candidate is not None
+                else f"generic_{index}_{action.job_type}"
+            ),
+            action_type=(
+                candidate["action_type"]
+                if candidate is not None
+                else action.action_type
+            ),
+            workflow_node_id=(
+                candidate["workflow_node_id"]
+                if candidate is not None
+                else f"generic:{action.job_type}"
+            ),
             job_type=action.job_type,
             execution_mode=execution_mode,
             resolved_parameters=resolved_parameters,
-            connections=action.connections,
             mcp_tool_name=None,
         ),
     )
+
+
+def resolve_candidate_for_action(
+    action: Action,
+    candidates_by_id: dict[str, dict[str, Any]],
+    candidate_actions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Resolve internal candidate by id first, then unique job_type."""
+    if action.action_id:
+        candidate = candidates_by_id.get(action.action_id)
+        if candidate is not None:
+            return candidate
+    matches = [
+        candidate
+        for candidate in candidate_actions
+        if candidate.get("job_type") == action.job_type
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def summarize_candidate_outputs(
+    candidate_actions: list[dict[str, Any]],
+) -> list[str]:
+    """Summarize MCP-resolved upstream outputs for connection diagnostics."""
+    outputs: list[str] = []
+    for candidate in candidate_actions:
+        for input_name, connections in (candidate.get("required_inputs") or {}).items():
+            for connection in connections:
+                source_job = connection.get("source_job_uid")
+                source_output = connection.get("source_output")
+                if source_job and source_output:
+                    outputs.append(f"{input_name}:{source_job}.{source_output}")
+    return sorted(set(outputs))
 
 
 def validate_parameters(

@@ -79,19 +79,19 @@ def candidate_context():
 
 
 def v2_forward_decision():
-    """Return a compact V2 decision that does not expose action_id."""
+    """Return a strict v3 minimal decision."""
     return {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "decision_type": "forward",
-        "action": "class_2D_new",
-        "parameters": {
-            "compute_num_gpus": 4,
-            "class2D_K": 50,
-        },
-        "reason": "Extracted particles are ready for 2D classification.",
-        "confidence": 0.9,
-        "risk_flags": [],
-        "evidence": ["J8 completed with particles output."],
+        "selected_actions": [
+            {
+                "job_type": "class_2D_new",
+                "parameters": {
+                    "compute_num_gpus": 4,
+                    "class2D_K": 50,
+                },
+            }
+        ],
     }
 
 
@@ -109,14 +109,7 @@ class V2DecisionAdapterTests(unittest.TestCase):
 
     def test_unknown_v2_action_becomes_generic_plan(self):
         decision = v2_forward_decision()
-        decision["action"] = "unknown_future_job"
-        decision["job_type"] = "unknown_future_job"
-        decision["connections"] = {
-            "particles": {
-                "source_job_uid": "J37",
-                "source_output": "particles_selected",
-            }
-        }
+        decision["selected_actions"][0]["job_type"] = "unknown_future_job"
 
         result = adapt_v2_decision_to_internal(decision, candidate_actions())
 
@@ -124,10 +117,7 @@ class V2DecisionAdapterTests(unittest.TestCase):
         action = result["internal_decision"]["selected_actions"][0]
         self.assertEqual(action["action_id"], "generic_0_unknown_future_job")
         self.assertEqual(action["job_type"], "unknown_future_job")
-        self.assertEqual(
-            action["connections"]["particles"]["source_output"],
-            "particles_selected",
-        )
+        self.assertNotIn("connections", action)
 
     def test_duplicate_same_type_candidates_prefer_original_completed_job(self):
         result = adapt_v2_decision_to_internal(
@@ -168,6 +158,43 @@ class V2DecisionAdapterTests(unittest.TestCase):
             result["execution_result"]["execution_plan"]["actions"][0]["job_type"],
             "class_2D_new",
         )
+
+    def test_v3_rejects_forbidden_reason_field(self):
+        decision = v2_forward_decision()
+        decision["reason"] = "not allowed"
+
+        result = adapt_v2_decision_to_internal(decision, candidate_actions())
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["issues"][0]["code"], "schema_validation_error")
+
+    def test_v3_rejects_forbidden_connections_field(self):
+        decision = v2_forward_decision()
+        decision["selected_actions"][0]["connections"] = {
+            "particles": {
+                "source_job_uid": "J37",
+                "source_output": "particles_selected",
+            }
+        }
+
+        result = adapt_v2_decision_to_internal(decision, candidate_actions())
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["issues"][0]["code"], "schema_validation_error")
+        self.assertEqual(result["issues"][0]["path"], "selected_actions.0.connections")
+
+    def test_v3_stop_requires_empty_selected_actions(self):
+        result = adapt_v2_decision_to_internal(
+            {
+                "schema_version": "3.0",
+                "decision_type": "stop",
+                "selected_actions": [],
+            },
+            candidate_actions(),
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["internal_decision"]["decision_type"], "stop")
 
 
 if __name__ == "__main__":

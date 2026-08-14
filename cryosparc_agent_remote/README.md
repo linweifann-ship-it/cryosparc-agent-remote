@@ -18,7 +18,7 @@ V2 model input no longer exposes `candidate_actions` to the model. The model
 can propose a CryoSPARC `action`/`job_type` directly. MCP uses candidates only
 as an internal helper when they are available; if no candidate matches, MCP can
 still build a generic `workspace.create_job(job_type, connections, params)`
-plan from the model decision.
+plan with connections resolved by MCP.
 
 ## Architecture
 
@@ -45,8 +45,8 @@ The system has five layers:
      editable parameters, GPU needs, interactive behavior, and approval needs.
    - `job_executor.py` converts validated actions into generic
      `workspace.create_job(job_type, connections, params)` plans or live jobs.
-     It prefers model-supplied `connections`, then falls back to internally
-     inferred inputs from workflow context.
+     It resolves `connections` from MCP candidate metadata and workflow context;
+     model-supplied connections are rejected at schema validation.
    - Non-interactive CPU/import jobs are queued with `job.queue()` even when no
      GPU lane is set. GPU jobs use the configured default lane,
      currently `g8m192_4090_slurm`.
@@ -62,22 +62,19 @@ The system has five layers:
      warnings and approval policy preserved.
    - This means MCP no longer needs to pre-enumerate every possible CryoSPARC
      job type before the model can request it. For unfamiliar jobs, the model
-     should provide the CryoSPARC `job_type`, valid `parameters`, and, when MCP
-     cannot infer them, explicit input `connections`.
+     should provide only the CryoSPARC `job_type` and valid `parameters`; MCP
+     resolves input connections or returns a structured validation/execution
+     error when it cannot.
    - Lives in `schemas.py`, `action_registry.py`, and
      `v2_decision_adapter.py`.
 
 5. **Model input and MCP tool layer**
-   - `model_input_builder.py` builds V2 model-facing payloads with
-     `dataset_info` and `current_state`, including `recent_nodes` so the model
-     can see short workflow history.
-   - `dataset_xml.py` extracts EMDB/XML metadata into `dataset_info`, including
-     pixel size, accelerating voltage, spherical aberration, total exposure
-     dose, and symmetry.
-   - `known_workflow_retriever.py` fills `known_workflow_steps` from local
-     workflow files when a dataset match is available, including CryoSPARC
-     workflow JSON files whose `jobs` are stored as a dictionary; otherwise it
-     returns `null`.
+   - `model_input_builder.py` builds schema 2.1 model-facing payloads with
+     `dataset_context` and `current_state`, including `recent_job_history`.
+   - `dataset_xml.py` extracts EMDB/XML metadata that is normalized into
+     `dataset_context.dataset_parameter_facts`.
+   - `known_workflow_steps` is present under `dataset_metadata` but currently
+     fixed to `null` for no-workflow training/evaluation.
    - `scripts/extract_dataset_info_xml.py` turns an EMDB XML file into a
      reusable dataset JSON file for closed-loop tests.
    - Exposes the project as MCP tools.
@@ -88,26 +85,29 @@ payload is:
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "task_type": "workflow_decision",
-  "dataset_info": {
-    "emdb_id": "EMD-6287",
-    "empiar_id": "EMPIAR-10025",
-    "pixel_size_A": 0.982,
-    "accelerating_voltage_kv": 300,
-    "spherical_aberration_mm": 2.7,
-    "total_exposure_dose_e_per_A2": 53,
-    "symmetry": "D7",
-    "known_workflow_steps": []
+  "dataset_context": {
+    "dataset_metadata": {
+      "emdb_id": "EMD-6287",
+      "empiar_id": "EMPIAR-10025",
+      "known_workflow_steps": null
+    },
+    "dataset_parameter_facts": {
+      "psize_A": 0.982,
+      "accel_kv": 300,
+      "cs_mm": 2.7,
+      "total_dose_e_per_A2": 53
+    },
+    "dataset_parameter_facts_by_job_type": {}
   },
   "current_state": {
     "last_node_id": "J42",
     "last_action": "import_micrographs",
     "last_node_status": "completed",
-    "recent_nodes": [
-      {"node_id": "J42", "job_type": "import_micrographs", "status": "completed"}
-    ],
-    "last_node_info": {}
+    "last_node_info": {},
+    "state_features": {},
+    "recent_job_history": []
   }
 }
 ```
@@ -116,20 +116,14 @@ The model can answer with a compact decision:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "3.0",
   "decision_type": "forward",
-  "action": "patch_ctf_estimation_multi",
-  "parameters": {"compute_num_gpus": 1},
-  "connections": {
-    "exposures": {
-      "source_job_uid": "J42",
-      "source_output": "imported_micrographs"
+  "selected_actions": [
+    {
+      "job_type": "patch_ctf_estimation_multi",
+      "parameters": {"compute_num_gpus": 1}
     }
-  },
-  "reason": "Imported micrographs are ready for CTF estimation.",
-  "confidence": 0.9,
-  "risk_flags": [],
-  "evidence": []
+  ]
 }
 ```
 
@@ -393,7 +387,8 @@ Behavior:
 - If `dry_run=false`, approved forward actions can create and queue real
   CryoSPARC jobs through `job_executor.py`.
 - If no internal candidate matches, MCP can still create a generic plan from
-  the model's `job_type`, `parameters`, and optional `connections`.
+  the model's `job_type` and `parameters`; model-provided `connections` are
+  rejected.
 
 Example dry-run result:
 
@@ -440,28 +435,24 @@ Example dry-run result:
 ## Model Decision JSON
 
 The model output must be a single valid JSON object with no surrounding prose.
-The compact V2 adapter accepts either `action`/`job_type` or explicit
-`selected_actions`. For unfamiliar jobs, include `connections` when MCP cannot
-infer CryoSPARC inputs from workflow context.
+The model-facing v3 schema accepts `decision_type` and `selected_actions`.
+Each selected action contains only `job_type` and `parameters`; `connections`
+are MCP-internal and must not be provided by the model.
 
 Compact example:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "3.0",
   "decision_type": "forward",
-  "action": "homo_abinit",
-  "parameters": {},
-  "connections": {
-    "particles": {
-      "source_job_uid": "J13",
-      "source_output": "particles_selected"
+  "selected_actions": [
+    {
+      "job_type": "homo_abinit",
+      "parameters": {
+        "abinit_K": 1
+      }
     }
-  },
-  "reason": "Selected particles are ready for ab initio reconstruction.",
-  "confidence": 0.9,
-  "risk_flags": [],
-  "evidence": []
+  ]
 }
 ```
 
@@ -481,38 +472,38 @@ Internal expanded shape:
 }
 ```
 
-## V2 Model Input
+## V24 Model Input
 
-The model-facing input is now V2 and is built around dataset context plus the
+The model-facing input is schema 2.1 and is built around dataset context plus the
 latest completed/failed workflow state:
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "task_type": "workflow_decision",
-  "dataset_info": {
-    "empiar_id": "EMPIAR-10025",
-    "emdb_id": "EMD-6287",
-    "resolution": null,
-    "input_type": "movies",
-    "macromolecules_type": "20S proteasome",
-    "num_of_maps": null,
-    "abstract": "2.8 Angstrom resolution reconstruction of the T20S proteasome",
-    "known_workflow_steps": null,
-    "pixel_size_A": 0.982,
-    "accelerating_voltage_kv": 300,
-    "spherical_aberration_mm": 2.7,
-    "total_exposure_dose_e_per_A2": 53,
-    "symmetry": "D7"
+  "dataset_context": {
+    "dataset_metadata": {
+      "empiar_id": "EMPIAR-10025",
+      "emdb_id": "EMD-6287",
+      "resolution": null,
+      "input_type": "movies",
+      "macromolecules_type": "20S proteasome",
+      "num_of_maps": null,
+      "abstract": "2.8 Angstrom resolution reconstruction of the T20S proteasome",
+      "known_workflow_steps": null
+    },
+    "dataset_parameter_facts": {
+      "psize_A": 0.982,
+      "accel_kv": 300,
+      "cs_mm": 2.7,
+      "total_dose_e_per_A2": 53
+    },
+    "dataset_parameter_facts_by_job_type": {}
   },
   "current_state": {
     "last_node_id": "J33",
     "last_action": "class_2D_new",
     "last_node_status": "completed",
-    "recent_nodes": [
-      {"node_id": "J32", "job_type": "extract_micrographs_multi", "status": "completed"},
-      {"node_id": "J33", "job_type": "class_2D_new", "status": "completed"}
-    ],
     "last_node_info": {
       "parameters": {
         "class2D_K": 50,
@@ -524,7 +515,15 @@ latest completed/failed workflow state:
         "particles_count": 176623,
         "class_averages_count": 50
       }
-    }
+    },
+    "state_features": {
+      "has_particles": true,
+      "particle_count": 176623
+    },
+    "recent_job_history": [
+      {"job_uid": "J32", "job_type": "extract_micrographs_multi", "status": "completed"},
+      {"job_uid": "J33", "job_type": "class_2D_new", "status": "completed"}
+    ]
   }
 }
 ```
@@ -532,16 +531,16 @@ latest completed/failed workflow state:
 `candidate_actions` are not model-facing. MCP may still compute them internally
 to infer common connections, but lack of a candidate no longer blocks generic
 job planning. Queue/running states are also kept internal; the model receives a
-new V2 payload only after a job completes or fails.
+new schema 2.1 payload only after a job completes or fails.
 
-XML user input can be converted to `dataset_info` with:
+XML user input can be converted to source metadata for `dataset_context` with:
 
 ```bash
 env PYTHONPATH=/ssd1/linweifan/cryosparc_agent \
   /ssd1/linweifan/miniforge3/envs/cryoagent-model/bin/python \
   scripts/extract_dataset_info_xml.py \
   --xml-file /hdd1/huangjianhua/agent/data/experiment/emd-6287.xml \
-  --output-json-file reports/model_closed_loop/dataset_info_emd_6287.json
+  --output-json-file reports/model_closed_loop/dataset_metadata_emd_6287.json
 ```
 
 ## Verified Real-Job Tests
@@ -608,10 +607,10 @@ lane、内部监控 Job、XML 数据集信息解析、known workflow 检索，�
 `execute_v2_model_decision` 会先校验模型输出；在 `dry_run=true` 时只返回执行计划。
 在 `dry_run=false` 且动作安全/已审批时，可以创建并提交真实 CryoSPARC Job。
 
-V2 输入不再把 `candidate_actions` 发给 model。model 可以直接返回
-`action`/`job_type`；MCP 会优先用内部 candidate 辅助推断连接，如果没有匹配
-candidate，也可以根据 model 给出的 `job_type`、`parameters` 和可选
-`connections` 生成通用 CryoSPARC Job 计划。
+V2 输入不再把 `candidate_actions` 发给 model。model 只返回 `job_type` 和
+`parameters`；MCP 会用内部 candidate 和 workflow context 解析连接。如果没有
+匹配 candidate，也可以根据 model 给出的 `job_type`、`parameters` 生成通用
+CryoSPARC Job 计划；model 提供 `connections` 会被 schema 校验拒绝。
 
 ## 架构
 
@@ -632,8 +631,8 @@ candidate，也可以根据 model 给出的 `job_type`、`parameters` 和可选
      GPU、是否 interactive、是否需要审批。
    - `job_executor.py` 把校验通过的动作转成通用
      `workspace.create_job(job_type, connections, params)` 执行计划或真实 Job。
-     连接优先使用 model 明确给出的 `connections`；没有时再尝试用 MCP 内部
-     workflow context 推断。
+     连接由 MCP 根据内部 candidate metadata 和 workflow context 解析；
+     model 明确给出的 `connections` 会被拒绝。
    - `job_result.py` 负责内部监控 queue/running，并只在 Job completed/failed 后
      生成给 model 的结果包。
 
@@ -647,13 +646,12 @@ candidate，也可以根据 model 给出的 `job_type`、`parameters` 和可选
    - 主要文件是 `schemas.py`、`action_registry.py` 和 `v2_decision_adapter.py`。
 
 5. **MCP Tool 层**
-   - `model_input_builder.py` 生成 V2 model 输入，包括 `dataset_info` 和
-     `current_state`，并通过 `recent_nodes` 给 model 提供最近 workflow 历史。
-   - `dataset_xml.py` 从 EMDB XML 中提取用户输入的数据集信息，包括 pixel
-     size、加速电压、球差、总剂量和对称性。
-   - `known_workflow_retriever.py` 根据本地 workflow 文件检索
-     `known_workflow_steps`；支持 CryoSPARC workflow JSON 的 `jobs` 字典格式；
-     匹配不到时填 `null`。
+   - `model_input_builder.py` 生成 schema 2.1 model 输入，包括
+     `dataset_context`、`current_state` 和 `recent_job_history`。
+   - `dataset_xml.py` 从 EMDB XML 中提取数据集元信息，再归一化到
+     `dataset_context.dataset_parameter_facts`。
+   - `known_workflow_steps` 字段保留在 `dataset_metadata`，当前 no-workflow
+     设置固定为 `null`。
    - 把上述能力暴露成 MCP tools。
    - 主要文件是 `cryosparc_mcp_server.py`。
 
@@ -685,7 +683,7 @@ cd /ssd1/linweifan/cryosparc_agent
   MCP 推断连接和诊断，不再发给 model 作为主输入。
 - `validate_model_decision`：只校验模型输出，不执行 Job。
 - `execute_model_decision`：校验模型输出并返回执行计划，默认 dry-run。
-- `build_model_input_payload` / `get_workflow_decision_context`：生成 V2
+- `build_model_input_payload` / `get_workflow_decision_context`：生成 schema 2.1
   model 输入。
 - `validate_v2_model_decision` / `execute_v2_model_decision`：校验并执行 V2
   model decision。
@@ -698,7 +696,7 @@ cd /ssd1/linweifan/cryosparc_agent
   原因为 `high_gpu_count`。
 - `dry_run=false`：对安全/已审批的 forward 动作可以创建并提交真实 Job。
 - 没有匹配 candidate 时，不再直接拒绝；MCP 会按 `job_type`、`parameters`
-  和可选 `connections` 生成 generic job plan。
+  生成 generic job plan，并由 MCP 解析连接；模型提供 `connections` 会被拒绝。
 
 ## 当前能完成什么
 
@@ -709,11 +707,11 @@ cd /ssd1/linweifan/cryosparc_agent
 - 输出 dry-run 执行计划。
 - 创建带上游连接的真实 CryoSPARC child job。
 - 对未登记的新 job type 生成 generic job plan。
-- 从 EMDB XML 生成 `dataset_info`。
-- 从本地标准 workflow JSON 生成 `known_workflow_steps`，包括 ab initio 路线。
+- 从 EMDB XML 生成可归一化到 `dataset_context` 的源 metadata。
+- 保留 `known_workflow_steps=null` 的 no-workflow 输入约束。
 - 提交到默认 GPU lane：`g8m192_4090_slurm`。
 - 内部监控 queued/running/completed。
-- Job 完成后生成 V2 JSON 给 model。
+- Job 完成后生成 schema 2.1 JSON 给 model。
 
 已完成真实测试：
 
@@ -728,7 +726,7 @@ cd /ssd1/linweifan/cryosparc_agent
 - `P2/W4/J36`：从 `J35.particles_selected` 再次创建 `class_2D_new`，完成。
 - `P2/W4/J37`：第二次 `select_2D`；人类选择 16 个 templates，输出 133812 个
   selected particles。
-- 在 V2 MCP 输出中加入 `current_state.recent_nodes` 后，模型不再重复选择
+- 在早期 V2 MCP 输出中加入短历史后，模型不再重复选择
   `class_2D_new`，而是转向 `homo_refine_new`。
 - `P2/W4/J39`：MCP 根据模型 decision 创建 `homo_refine_new`，自动连接
   `J37.particles_selected` 和 `J2.imported_volume_1`，完成后输出 volume、mask、

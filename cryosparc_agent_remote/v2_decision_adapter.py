@@ -2,6 +2,7 @@
 from typing import Any
 
 from action_registry import execute_model_decision_payload, get_candidate_actions
+from schemas import parse_external_model_decision
 
 
 def adapt_v2_decision_to_internal(
@@ -9,34 +10,22 @@ def adapt_v2_decision_to_internal(
     candidate_actions: list[dict[str, Any]],
     current_node_id: str | None = None,
 ) -> dict[str, Any]:
-    """Convert a V2 model decision into the internal schema v1 decision."""
-    decision_type = v2_decision.get("decision_type")
-    if decision_type in {"stop", "rollback"}:
-        return adapt_non_action_decision(v2_decision)
-    if decision_type not in {"forward", "branch"}:
+    """Convert a strict v3.0 minimal_v3 decision into internal schema v1."""
+    external_decision, schema_issues = parse_external_model_decision(v2_decision)
+    if external_decision is None:
         return {
             "success": False,
             "issues": [
-                issue(
-                    "unsupported_decision_type",
-                    "decision_type must be forward, branch, rollback, or stop.",
-                    "decision_type",
-                )
+                item.model_dump() if hasattr(item, "model_dump") else item
+                for item in schema_issues
             ],
         }
 
+    decision_type = v2_decision.get("decision_type")
+    if decision_type == "stop":
+        return adapt_non_action_decision(v2_decision)
+
     requested_actions = normalize_requested_actions(v2_decision)
-    if not requested_actions:
-        return {
-            "success": False,
-            "issues": [
-                issue(
-                    "missing_action",
-                    "forward/branch V2 decisions require action or selected_actions.",
-                    "action",
-                )
-            ],
-        }
 
     selected_actions = []
     issues = []
@@ -46,16 +35,20 @@ def adapt_v2_decision_to_internal(
             selected_actions.append(
                 {
                     "action_id": candidate["action_id"],
-                    "action_type": candidate["action_type"],
+                    "action_type": resolve_action_type(decision_type, candidate),
                     "workflow_node_id": candidate["workflow_node_id"],
                     "job_type": candidate["job_type"],
                     "parameters": requested.get("parameters") or {},
-                    "connections": requested.get("connections"),
                 }
             )
             continue
         selected_actions.append(
-            build_generic_selected_action(requested, current_node_id, index)
+            build_generic_selected_action(
+                requested,
+                current_node_id,
+                index,
+                decision_type=decision_type,
+            )
         )
 
     if issues:
@@ -76,10 +69,10 @@ def adapt_v2_decision_to_internal(
                 internal_decision_type,
                 v2_decision,
             ),
-            "reason": v2_decision.get("reason") or "V2 model decision.",
-            "confidence": v2_decision.get("confidence", 0.0),
-            "risk_flags": v2_decision.get("risk_flags") or [],
-            "evidence": v2_decision.get("evidence") or [],
+            "reason": "External v3.0 minimal model decision.",
+            "confidence": 0.0,
+            "risk_flags": [],
+            "evidence": [],
         },
     }
 
@@ -119,6 +112,7 @@ def execute_v2_model_decision_payload(
         dry_run=dry_run,
         project_uid=project_uid,
         workspace_uid=workspace_uid,
+        allow_internal_schema=True,
     )
     return {
         "success": execution_result["success"],
@@ -158,67 +152,54 @@ def build_branch_plan_if_needed(
 
 
 def adapt_non_action_decision(v2_decision: dict[str, Any]) -> dict[str, Any]:
-    """Convert V2 stop/rollback decisions into the internal schema."""
+    """Convert v3 stop decisions into the internal schema."""
     decision_type = v2_decision.get("decision_type")
-    rollback_target = v2_decision.get("rollback_target")
     return {
         "success": True,
         "internal_decision": {
             "schema_version": "1.0",
             "decision_type": decision_type,
             "selected_actions": [],
-            "rollback_target": rollback_target,
+            "rollback_target": None,
             "branch_plan": None,
-            "reason": v2_decision.get("reason") or f"V2 {decision_type} decision.",
-            "confidence": v2_decision.get("confidence", 0.0),
-            "risk_flags": v2_decision.get("risk_flags") or [],
-            "evidence": v2_decision.get("evidence") or [],
+            "reason": f"External v3.0 minimal {decision_type} decision.",
+            "confidence": 0.0,
+            "risk_flags": [],
+            "evidence": [],
         },
     }
 
 
 def normalize_requested_actions(v2_decision: dict[str, Any]) -> list[dict[str, Any]]:
-    """Support both compact single-action and explicit selected_actions shapes."""
+    """Normalize the strict v3.0 selected_actions shape."""
     selected = v2_decision.get("selected_actions")
     if isinstance(selected, list):
         return [
-            action
+            {
+                "action": action.get("job_type"),
+                "job_type": action.get("job_type"),
+                "parameters": action.get("parameters") or {},
+            }
             for action in selected
             if isinstance(action, dict)
         ]
-
-    action = v2_decision.get("action") or v2_decision.get("job_type")
-    if not action:
-        return []
-    return [
-        {
-            "action": action,
-            "job_type": v2_decision.get("job_type") or action,
-            "parameters": v2_decision.get("parameters") or {},
-            "connections": v2_decision.get("connections"),
-            "action_id": v2_decision.get("action_id"),
-            "workflow_node_id": v2_decision.get("workflow_node_id"),
-        }
-    ]
+    return []
 
 
 def build_generic_selected_action(
     requested: dict[str, Any],
     current_node_id: str | None,
     index: int,
+    decision_type: str,
 ) -> dict[str, Any]:
     """Build an internal action when no candidate matched the model request."""
     job_type = requested.get("job_type") or requested.get("action")
     return {
-        "action_id": requested.get("action_id") or f"generic_{index}_{job_type}",
-        "action_type": requested.get("action_type") or "forward",
-        "workflow_node_id": (
-            requested.get("workflow_node_id")
-            or f"{current_node_id or 'current'}:{job_type}"
-        ),
+        "action_id": f"generic_{index}_{job_type}",
+        "action_type": "branch" if decision_type == "branch" else "forward",
+        "workflow_node_id": f"{current_node_id or 'current'}:{job_type}",
         "job_type": job_type,
         "parameters": requested.get("parameters") or {},
-        "connections": requested.get("connections"),
     }
 
 
@@ -226,36 +207,24 @@ def match_candidate(
     requested: dict[str, Any],
     candidate_actions: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Find the internal candidate that best matches the V2 model request."""
-    action_id = requested.get("action_id")
-    if action_id:
-        return next(
-            (
-                candidate
-                for candidate in candidate_actions
-                if candidate["action_id"] == action_id
-            ),
-            None,
-        )
-
-    workflow_node_id = requested.get("workflow_node_id")
+    """Find the internal candidate that best matches the model job_type."""
     job_type = requested.get("job_type") or requested.get("action")
     matches = [
         candidate
         for candidate in candidate_actions
-        if (
-            (not job_type or candidate["job_type"] == job_type)
-            and (
-                not workflow_node_id
-                or candidate["workflow_node_id"] == workflow_node_id
-            )
-        )
+        if not job_type or candidate["job_type"] == job_type
     ]
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
         return select_preferred_candidate(matches)
     return None
+
+
+def resolve_action_type(decision_type: str, candidate: dict[str, Any]) -> str:
+    if decision_type == "branch":
+        return "branch"
+    return candidate["action_type"]
 
 
 def select_preferred_candidate(

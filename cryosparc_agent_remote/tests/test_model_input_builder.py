@@ -50,6 +50,38 @@ def workflow_state(status: str = "completed") -> dict:
                 "has_warning": False,
             },
             {
+                "workflow_node_id": "J6",
+                "logical_node_id": "node_template_picker_gpu_001",
+                "cryosparc_job_uid": "J6",
+                "job_type": "template_picker_gpu",
+                "title": "Unrelated failed branch",
+                "status": "completed",
+                "updated_at": "2026-06-28T23:58:00+00:00",
+                "timestamps": {},
+                "parent_job_uids": [],
+                "parent_workflow_node_ids": [],
+                "parent_logical_node_ids": [],
+                "child_job_uids": [],
+                "child_workflow_node_ids": [],
+                "child_logical_node_ids": [],
+                "inputs": {},
+                "outputs": {
+                    "templates": {
+                        "type": "template",
+                        "num_items": 6,
+                        "available": True,
+                        "result_names": ["template"],
+                        "summary_keys": [],
+                        "latest_summary_stat_keys": [],
+                    }
+                },
+                "key_parameters": {},
+                "runtime": {},
+                "run_errors": {},
+                "has_error": False,
+                "has_warning": False,
+            },
+            {
                 "workflow_node_id": "J8",
                 "logical_node_id": "node_extract_micrographs_multi_001",
                 "cryosparc_job_uid": "J8",
@@ -107,9 +139,33 @@ def workflow_state(status: str = "completed") -> dict:
                     "allocated_ram": None,
                     "allocated_ssd": None,
                 },
+                "run_errors": {},
                 "has_error": False,
                 "has_warning": False,
-            }
+            },
+            {
+                "workflow_node_id": "J9",
+                "logical_node_id": "node_extract_micrographs_multi_002",
+                "cryosparc_job_uid": "J9",
+                "job_type": "extract_micrographs_multi",
+                "title": "Failed retry",
+                "status": "building",
+                "updated_at": "2026-06-29T00:05:00+00:00",
+                "timestamps": {},
+                "parent_job_uids": [],
+                "parent_workflow_node_ids": [],
+                "parent_logical_node_ids": [],
+                "child_job_uids": [],
+                "child_workflow_node_ids": [],
+                "child_logical_node_ids": [],
+                "inputs": {},
+                "outputs": {},
+                "key_parameters": {"box_size_pix": 384},
+                "runtime": {},
+                "run_errors": {"errors_build_inputs": "Inputs were empty."},
+                "has_error": True,
+                "has_warning": False,
+            },
         ],
         "edges": [],
         "root_nodes": [],
@@ -133,11 +189,20 @@ class ModelInputBuilderTests(unittest.TestCase):
                 dataset_info={"empiar_id": "EMPIAR-12099"},
             )
 
-        self.assertEqual(result["schema_version"], "2.0")
+        self.assertEqual(result["schema_version"], "2.1")
         self.assertEqual(result["task_type"], "workflow_decision")
         self.assertNotIn("candidate_actions", result)
-        self.assertEqual(result["dataset_info"]["known_workflow_steps"], None)
+        self.assertNotIn("dataset_info", result)
+        self.assertEqual(
+            result["dataset_context"]["dataset_metadata"]["known_workflow_steps"],
+            None,
+        )
         self.assertEqual(result["current_state"]["last_node_id"], "J8")
+        self.assertEqual(result["current_state"]["last_node_status"], "completed")
+        self.assertEqual(
+            result["current_state"]["state_features"]["particle_count"],
+            176623,
+        )
         self.assertEqual(
             result["current_state"]["last_node_info"]["metrics"]["particles_count"],
             176623,
@@ -152,18 +217,19 @@ class ModelInputBuilderTests(unittest.TestCase):
             "g8m192_4090_slurm",
         )
         self.assertEqual(
-            result["current_state"]["recent_nodes"],
             [
                 {
-                    "node_id": "J7",
-                    "job_type": "inspect_picks_v2",
-                    "status": "completed",
-                },
-                {
-                    "node_id": "J8",
-                    "job_type": "extract_micrographs_multi",
-                    "status": "completed",
-                },
+                    item["job_uid"]: item["status"]
+                    for item in result["current_state"]["recent_job_history"]
+                }
+            ][0],
+            {"J7": "completed", "J8": "completed", "J9": "failure"},
+        )
+        self.assertNotIn(
+            "J6",
+            [
+                item["job_uid"]
+                for item in result["current_state"]["recent_job_history"]
             ],
         )
 

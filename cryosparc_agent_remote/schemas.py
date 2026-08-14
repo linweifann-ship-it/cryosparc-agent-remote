@@ -1,10 +1,11 @@
 # Defines the model decision schema and validation result models.
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 DecisionType = Literal["forward", "rollback", "branch", "stop"]
+ExternalDecisionType = Literal["forward", "branch", "stop"]
 ActionType = Literal["forward", "branch"]
 RollbackMode = Literal[
     "mark_only",
@@ -16,12 +17,42 @@ RollbackMode = Literal[
 
 # Model-selected actions may either reference an MCP candidate or name a job directly.
 class Action(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     action_id: str | None = None
     action_type: ActionType = "forward"
     workflow_node_id: str | None = None
     job_type: str
     parameters: dict[str, Any]
-    connections: dict[str, Any] | None = None
+
+
+class ExternalAction(BaseModel):
+    """Model-facing v3 minimal action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_type: str
+    parameters: dict[str, Any]
+
+
+class ExternalModelDecision(BaseModel):
+    """Strict model-facing output contract: schema v3.0 minimal_v3."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["3.0"]
+    decision_type: ExternalDecisionType
+    selected_actions: list[ExternalAction]
+
+    @model_validator(mode="after")
+    def validate_external_shape(self) -> "ExternalModelDecision":
+        if self.decision_type == "forward" and len(self.selected_actions) != 1:
+            raise ValueError("forward decisions require exactly one selected_action")
+        if self.decision_type == "branch" and not self.selected_actions:
+            raise ValueError("branch decisions require at least one selected_action")
+        if self.decision_type == "stop" and self.selected_actions:
+            raise ValueError("stop decisions must include an empty selected_actions list")
+        return self
 
 
 class RollbackTarget(BaseModel):
@@ -107,7 +138,6 @@ class ResolvedAction(BaseModel):
     job_type: str
     execution_mode: str
     resolved_parameters: dict[str, Any]
-    connections: dict[str, Any] | None = None
     mcp_tool_name: str | None = None
 
 
@@ -126,6 +156,28 @@ def parse_model_decision(payload: dict[str, Any]) -> tuple[ModelDecision | None,
     """Parse a raw JSON payload into ModelDecision or normalized issues."""
     try:
         return ModelDecision.model_validate(payload), []
+    except ValidationError as exc:
+        issues = []
+        for error in exc.errors():
+            path = ".".join(str(part) for part in error.get("loc", ())) or None
+            issues.append(
+                ValidationIssue(
+                    code="schema_validation_error",
+                    message=error.get("msg", "Invalid model decision schema"),
+                    path=path,
+                )
+            )
+        return None, issues
+    except ValueError as exc:
+        return None, [ValidationIssue(code="schema_validation_error", message=str(exc))]
+
+
+def parse_external_model_decision(
+    payload: dict[str, Any],
+) -> tuple[ExternalModelDecision | None, list[ValidationIssue]]:
+    """Parse strict v3.0 minimal_v3 model output or normalized issues."""
+    try:
+        return ExternalModelDecision.model_validate(payload), []
     except ValidationError as exc:
         issues = []
         for error in exc.errors():

@@ -40,13 +40,10 @@ def build_candidate_actions() -> list[dict]:
 def build_model_decision() -> dict:
     """Return the simulated model decision JSON."""
     return {
-        "schema_version": "1.0",
+        "schema_version": "3.0",
         "decision_type": "forward",
         "selected_actions": [
             {
-                "action_id": "forward_agent_import_movies",
-                "action_type": "forward",
-                "workflow_node_id": "J_AGENT_IMPORT_TEMPLATE",
                 "job_type": "import_movies",
                 "parameters": {
                     "blob_paths": (
@@ -57,14 +54,6 @@ def build_model_decision() -> dict:
                 },
             }
         ],
-        "rollback_target": None,
-        "branch_plan": None,
-        "reason": (
-            "Smoke test for MCP-model handoff and real CryoSPARC job creation."
-        ),
-        "confidence": 0.99,
-        "risk_flags": ["smoke_test_fake_input_paths"],
-        "evidence": ["Candidate action is available and has no upstream inputs."],
     }
 
 
@@ -72,23 +61,31 @@ def main() -> None:
     candidate_actions = build_candidate_actions()
     model_decision = build_model_decision()
     mcp_to_model_package = {
-        "schema_version": "1.0",
+        "schema_version": "2.1",
+        "task_type": "workflow_decision",
         "task": "Choose the next CryoSPARC workflow action.",
         "project_uid": PROJECT_UID,
         "workspace_uid": WORKSPACE_UID,
-        "current_node_id": "J_AGENT_IMPORT_TEMPLATE",
-        "workflow_context": {
-            "workflow_status": "smoke_test",
-            "decision_hint": None,
+        "dataset_context": {
+            "dataset_metadata": {
+                "known_workflow_steps": None,
+            },
+            "dataset_parameter_facts": {},
+            "dataset_parameter_facts_by_job_type": {},
         },
-        "candidate_actions": candidate_actions,
+        "current_state": {
+            "last_node_id": None,
+            "last_action": None,
+            "last_node_status": "not_started",
+            "last_node_info": {},
+            "state_features": {},
+            "recent_job_history": [],
+        },
         "output_contract": {
             "return_json_only": True,
-            "schema_version": "1.0",
-            "allowed_decision_type": ["forward", "rollback", "branch", "stop"],
-            "selected_actions_rule": (
-                "Every selected action_id must come from candidate_actions."
-            ),
+            "schema_version": "3.0",
+            "allowed_decision_type": ["forward", "branch", "stop"],
+            "selected_action_fields": ["job_type", "parameters"],
         },
     }
 

@@ -2,10 +2,20 @@
 import unittest
 
 from action_registry import (
-    execute_model_decision_payload,
+    execute_model_decision_payload as execute_registry_decision_payload,
     generate_candidate_actions,
-    validate_model_decision_payload,
+    validate_model_decision_payload as validate_registry_decision_payload,
 )
+
+
+def execute_model_decision_payload(*args, **kwargs):
+    kwargs.setdefault("allow_internal_schema", True)
+    return execute_registry_decision_payload(*args, **kwargs)
+
+
+def validate_model_decision_payload(*args, **kwargs):
+    kwargs.setdefault("allow_internal_schema", True)
+    return validate_registry_decision_payload(*args, **kwargs)
 
 
 def candidate_actions():
@@ -371,10 +381,7 @@ class ActionRegistryFixedTests(unittest.TestCase):
         )
 
         self.assertTrue(result["success"])
-        self.assertEqual(
-            result["warnings"][0]["code"],
-            "generic_action_without_candidate",
-        )
+        self.assertEqual(result["resolved_actions"][0]["action_id"], "forward_J8")
 
         execute_result = execute_model_decision_payload(
             decision,
@@ -383,8 +390,33 @@ class ActionRegistryFixedTests(unittest.TestCase):
         self.assertTrue(execute_result["success"])
         self.assertEqual(
             execute_result["execution_plan"]["actions"][0]["execution_mode"],
-            "create_job",
+            "dry_run_only",
         )
+
+    def test_model_facing_rejects_legacy_schema_version(self):
+        result = validate_registry_decision_payload(
+            forward_decision(),
+            candidate_actions=candidate_actions(),
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["issues"][0]["code"], "unsupported_schema_version")
+
+    def test_known_generic_job_without_resolved_connections_fails(self):
+        decision = forward_decision()
+        decision["selected_actions"][0] = {
+            "job_type": "class_2D_new",
+            "parameters": {"compute_num_gpus": 4, "class2D_K": 50},
+        }
+
+        result = validate_model_decision_payload(
+            decision,
+            candidate_actions=[],
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["issues"][0]["code"], "connection_resolution_failed")
+        self.assertEqual(result["issues"][0]["path"], "selected_actions.0.job_type")
 
     def test_stop_decision_is_valid_and_planned(self):
         decision = forward_decision(
@@ -525,7 +557,7 @@ class ActionRegistryFixedTests(unittest.TestCase):
             ("J2", "imported_volume_1"),
         )
 
-    def test_generic_action_can_use_model_supplied_connections(self):
+    def test_model_supplied_connections_are_rejected(self):
         decision = forward_decision()
         decision["selected_actions"][0] = {
             "job_type": "unknown_future_job",
@@ -543,11 +575,9 @@ class ActionRegistryFixedTests(unittest.TestCase):
             candidate_actions=[],
         )
 
-        self.assertTrue(result["success"])
-        action = result["execution_plan"]["actions"][0]
-        self.assertEqual(action["job_type"], "unknown_future_job")
-        self.assertEqual(action["connections"]["particles"], ("J37", "particles_selected"))
-        self.assertEqual(action["resolved_parameters"]["custom_param"], 3)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["issues"][0]["code"], "schema_validation_error")
+        self.assertEqual(result["issues"][0]["path"], "selected_actions.0.connections")
 
 
 if __name__ == "__main__":

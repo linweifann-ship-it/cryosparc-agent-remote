@@ -203,7 +203,7 @@ def get_job_result_package(
     project_uid: str,
     workspace_uid: str,
     job_uid: str,
-    include_next_candidates: bool = True,
+    include_next_candidates: bool = False,
 ) -> dict:
     """
     Return model-facing results only after a CryoSPARC job reaches a terminal state.
@@ -308,6 +308,7 @@ def validate_v2_model_decision(
     validation = validate_model_decision_payload(
         adapter_result["internal_decision"],
         candidate_actions=candidate_context["candidate_actions"],
+        allow_internal_schema=True,
     )
     return {
         "success": validation["success"],

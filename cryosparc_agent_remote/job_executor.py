@@ -13,11 +13,9 @@ def plan_job_action(
     """Build one dry-run job plan from a validated action and candidate context."""
     job_type = action["job_type"]
     spec = get_job_spec(job_type)
-    connections = build_explicit_connections(action.get("connections"))
-    if connections is None:
-        connections = build_connections(
-            (candidate_action or {}).get("required_inputs", {})
-        )
+    connections = build_connections(
+        (candidate_action or {}).get("required_inputs", {})
+    )
     queue = build_queue_plan(spec, lane)
     approval_reasons = approval_reasons_for(action, spec)
 
@@ -67,42 +65,6 @@ def build_connections(
     return connections
 
 
-def build_explicit_connections(
-    raw_connections: dict[str, Any] | None,
-) -> dict[str, tuple[str, str] | list[tuple[str, str]]] | None:
-    """Normalize model-supplied CryoSPARC connections, if present."""
-    if raw_connections is None:
-        return None
-    connections: dict[str, tuple[str, str] | list[tuple[str, str]]] = {}
-    for input_name, raw_value in raw_connections.items():
-        values = normalize_connection_values(raw_value)
-        if not values:
-            continue
-        connections[input_name] = values[0] if len(values) == 1 else values
-    return connections
-
-
-def normalize_connection_values(raw_value: Any) -> list[tuple[str, str]]:
-    """Accept compact or object-shaped model connection values."""
-    values = raw_value if isinstance(raw_value, list) else [raw_value]
-    normalized = []
-    for value in values:
-        if isinstance(value, (tuple, list)) and len(value) == 2:
-            normalized.append((str(value[0]), str(value[1])))
-            continue
-        if not isinstance(value, dict):
-            continue
-        source_job = (
-            value.get("source_job_uid")
-            or value.get("source_job")
-            or value.get("job_uid")
-        )
-        source_output = value.get("source_output") or value.get("output")
-        if source_job and source_output:
-            normalized.append((str(source_job), str(source_output)))
-    return normalized
-
-
 def build_queue_plan(spec: dict[str, Any], lane: str | None) -> dict[str, Any]:
     """Prepare queue settings without submitting anything to CryoSPARC."""
     selected_lane = lane or spec.get("default_lane")
@@ -143,6 +105,7 @@ def execute_job_action(
     workspace_uid: str,
     planned_action: dict[str, Any],
     dry_run: bool = True,
+    allow_approval_required_create: bool = False,
 ) -> dict[str, Any]:
     """
     Execute one planned job action.
@@ -159,7 +122,7 @@ def execute_job_action(
             "message": "Dry run only; no CryoSPARC job was created or queued.",
         }
 
-    if planned_action["approval_required"]:
+    if planned_action["approval_required"] and not allow_approval_required_create:
         return {
             "success": False,
             "dry_run": False,

@@ -155,7 +155,11 @@ class JobResultPackageTests(unittest.TestCase):
         self.assertTrue(result["ready_for_model"])
         self.assertFalse(result["internal_only"])
         self.assertEqual(result["message_type"], "mcp_job_result")
-        self.assertEqual(result["next_candidate_actions"], [{"action_id": "forward_J31"}])
+        self.assertNotIn("next_candidate_actions", result)
+        self.assertNotIn("blocked_actions", result)
+        self.assertNotIn("decision_hint", result)
+        self.assertNotIn("selected_actions_rule", result["output_contract"])
+        self.assertIn("decision_rule", result["output_contract"])
         self.assertEqual(result["metrics"]["num_items_by_output"]["particles"], 100)
 
 
