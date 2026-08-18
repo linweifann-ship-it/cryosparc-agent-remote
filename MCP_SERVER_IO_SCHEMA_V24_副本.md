@@ -1,4 +1,4 @@
-# CryoAgent MCP Server I/O Schema Alignment (Current v23)
+# CryoAgent MCP Server I/O Schema Alignment (Schema V24)
 
 本文档用于和 MCP server 侧对齐当前模型实际使用的输入输出 schema。
 
@@ -110,7 +110,7 @@
 
 说明：
 
-- `known_workflow_steps` 虽然字段保留，但当前 `v23` 训练和评估中是屏蔽状态
+- `known_workflow_steps` 虽然字段保留，但当前 Schema V24 训练和评估中是屏蔽状态
 - 也就是说，当前这版模型学习的是“无已知 workflow 参考”的自主决策
 - 如果后续恢复已知 workflow 输入，建议仍沿用同一字段，不要再设计另一套接口
 
@@ -454,7 +454,7 @@
 
 ## 6. `state_features`
 
-这是 `v23` 新补充并已经验证有效的稳定状态摘要。2026-08-08 对杭州服务器 `P2/W4`、`P2/W8`、`P2/W9`、`P2/W10` 的既有 CryoSPARC workflow 做过只读测试：这些字段可以由 CryoSPARC job 的 `outputs.groups[].name`、`outputs.groups[].field_names` 和 `num_items` 直接读取或简单派生。
+这是 Schema V24 中已经验证有效的稳定状态摘要。2026-08-08 对杭州服务器 `P2/W4`、`P2/W8`、`P2/W9`、`P2/W10` 的既有 CryoSPARC workflow 做过只读测试：这些字段可以由 CryoSPARC job 的 `outputs.groups[].name`、`outputs.groups[].field_names` 和 `num_items` 直接读取或简单派生。
 
 原则：
 
