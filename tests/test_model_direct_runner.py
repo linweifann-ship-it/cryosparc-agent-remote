@@ -6,6 +6,7 @@ from urllib.error import HTTPError
 
 from model_direct_runner import (
     build_workflow_decision_prompt,
+    extract_usage_summary,
     normalize_optional_path,
     parse_model_decision_text,
     run_openai_compatible_model,
@@ -75,9 +76,29 @@ class ModelDirectRunnerTests(unittest.TestCase):
                     retry_backoff_seconds=2,
                 )
         self.assertEqual(result["raw_text"], "OK")
+        self.assertEqual(result["usage"]["present"], False)
         self.assertEqual(result["attempts"], 3)
         self.assertEqual(urlopen.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+
+    def test_extract_usage_summary_reads_chat_cached_tokens(self):
+        result = extract_usage_summary(
+            {
+                "usage": {
+                    "prompt_tokens": 2048,
+                    "completion_tokens": 10,
+                    "total_tokens": 2058,
+                    "prompt_tokens_details": {"cached_tokens": 1024},
+                }
+            }
+        )
+
+        self.assertTrue(result["present"])
+        self.assertEqual(result["cached_tokens"], 1024)
+        self.assertEqual(
+            result["cache_field_path"],
+            "usage.prompt_tokens_details.cached_tokens",
+        )
 
 
 if __name__ == "__main__":

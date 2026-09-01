@@ -257,6 +257,25 @@ class LocalJobLogTests(unittest.TestCase):
         self.assertNotIn("retry_guidance", context)
         self.assertNotIn("error_type", context["execution_error"])
 
+    def test_autonomous_prompt_keeps_contract_before_dynamic_state(self):
+        messages = self.runner.build_autonomous_prompt(
+            model_input={
+                "schema_version": "2.0",
+                "current_state": {"last_node_id": "J9"},
+            },
+            candidate_context={"generated_at": "dynamic-time"},
+            round_index=3,
+        )
+
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["system", "system", "user"],
+        )
+        self.assertIn("output_contract", messages[1]["content"])
+        self.assertNotIn("dynamic-time", messages[1]["content"])
+        self.assertNotIn("output_contract", messages[2]["content"])
+        self.assertIn('"round":3', messages[2]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

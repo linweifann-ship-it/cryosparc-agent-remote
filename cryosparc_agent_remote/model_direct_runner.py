@@ -176,7 +176,7 @@ def run_openai_compatible_model(
         "max_tokens": max_new_tokens,
     }
     endpoint = api_base.rstrip("/") + "/chat/completions"
-    body = json.dumps(payload).encode("utf-8")
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     req = request.Request(
         endpoint,
         data=body,
@@ -221,8 +221,40 @@ def run_openai_compatible_model(
         "endpoint": endpoint,
         "request_payload": payload,
         "raw_response": parsed,
+        "usage": extract_usage_summary(parsed),
         "raw_text": raw_text,
         "attempts": attempts,
+    }
+
+
+def extract_usage_summary(response: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize token/cache counters across OpenAI-compatible response shapes."""
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return {
+            "present": False,
+            "cached_tokens": None,
+            "cache_field_path": None,
+        }
+
+    prompt_details = usage.get("prompt_tokens_details")
+    input_details = usage.get("input_tokens_details")
+    cached_tokens = None
+    cache_field_path = None
+    if isinstance(prompt_details, dict) and "cached_tokens" in prompt_details:
+        cached_tokens = prompt_details.get("cached_tokens")
+        cache_field_path = "usage.prompt_tokens_details.cached_tokens"
+    elif isinstance(input_details, dict) and "cached_tokens" in input_details:
+        cached_tokens = input_details.get("cached_tokens")
+        cache_field_path = "usage.input_tokens_details.cached_tokens"
+
+    return {
+        "present": True,
+        "prompt_tokens": usage.get("prompt_tokens") or usage.get("input_tokens"),
+        "completion_tokens": usage.get("completion_tokens") or usage.get("output_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "cached_tokens": cached_tokens,
+        "cache_field_path": cache_field_path,
     }
 
 

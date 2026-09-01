@@ -138,6 +138,59 @@ SYSTEM_PROMPT = (
     "thinking text. Codex and MCP will not repair missing decisions for you."
 )
 
+STATIC_DECISION_INSTRUCTIONS = {
+    "instruction": (
+        "Choose exactly one next action, rollback, or stop from the current CryoSPARC state. "
+        "Do not repeat completed Import Micrographs. If you choose a job, include every "
+        "required input connection you want MCP to use. MCP will return validation or "
+        "execution errors without repairing your decision."
+    ),
+    "output_contract": {
+        "schema_version": "2.0",
+        "decision_type": "forward | branch | rollback | stop",
+        "action": "CryoSPARC job type for forward/branch decisions.",
+        "job_type": "Same as action when using compact format.",
+        "parameters": "Only non-default parameters explicitly chosen by the model.",
+        "connections": {
+            "input_name": {
+                "source_job_uid": "CryoSPARC source job, chosen by the model",
+                "source_output": "CryoSPARC output group, chosen by the model",
+            }
+        },
+        "reason": "Decision reason. Use your own evidence only.",
+        "confidence": "Number from 0.0 to 1.0.",
+        "risk_flags": [],
+        "evidence": [],
+    },
+    "valid_examples": [
+        {
+            "schema_version": "2.0",
+            "decision_type": "forward",
+            "action": "patch_ctf_estimation_multi",
+            "job_type": "patch_ctf_estimation_multi",
+            "parameters": {"compute_num_gpus": 1},
+            "connections": {
+                "exposures": {
+                    "source_job_uid": "J123",
+                    "source_output": "imported_micrographs",
+                }
+            },
+            "reason": "The current completed job provides micrographs.",
+            "confidence": 0.8,
+            "risk_flags": [],
+            "evidence": ["Current output imported_micrographs is available."],
+        },
+        {
+            "schema_version": "2.0",
+            "decision_type": "stop",
+            "reason": "No safe autonomous action is clear.",
+            "confidence": 0.5,
+            "risk_flags": ["needs_human_review"],
+            "evidence": [],
+        },
+    ],
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -454,65 +507,30 @@ def build_autonomous_prompt(
     candidate_context: dict[str, Any],
     round_index: int,
 ) -> list[dict[str, str]]:
-    output_contract = {
-        "schema_version": "2.0",
-        "decision_type": "forward | branch | rollback | stop",
-        "action": "CryoSPARC job type for forward/branch decisions.",
-        "job_type": "Same as action when using compact format.",
-        "parameters": "Only non-default parameters explicitly chosen by the model.",
-        "connections": {
-            "input_name": {
-                "source_job_uid": "CryoSPARC source job, chosen by the model",
-                "source_output": "CryoSPARC output group, chosen by the model",
-            }
-        },
-        "reason": "Decision reason. Use your own evidence only.",
-        "confidence": "Number from 0.0 to 1.0.",
-        "risk_flags": [],
-        "evidence": [],
-    }
-    payload = {
+    dynamic_payload = {
         "round": round_index,
-        "instruction": (
-            "Choose exactly one next action, rollback, or stop from the current "
-            "CryoSPARC state. Do not repeat completed Import Micrographs. "
-            "If you choose a job, include every required input connection you "
-            "want MCP to use. MCP will return validation or execution errors "
-            "without repairing your decision."
-        ),
         "model_input": model_input,
-        "output_contract": output_contract,
-        "valid_examples": [
-            {
-                "schema_version": "2.0",
-                "decision_type": "forward",
-                "action": "patch_ctf_estimation_multi",
-                "job_type": "patch_ctf_estimation_multi",
-                "parameters": {"compute_num_gpus": 1},
-                "connections": {
-                    "exposures": {
-                        "source_job_uid": "J123",
-                        "source_output": "imported_micrographs",
-                    }
-                },
-                "reason": "The current completed job provides micrographs.",
-                "confidence": 0.8,
-                "risk_flags": [],
-                "evidence": ["Current output imported_micrographs is available."],
-            },
-            {
-                "schema_version": "2.0",
-                "decision_type": "stop",
-                "reason": "No safe autonomous action is clear.",
-                "confidence": 0.5,
-                "risk_flags": ["needs_human_review"],
-                "evidence": [],
-            },
-        ],
     }
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {
+            "role": "system",
+            "content": json.dumps(
+                STATIC_DECISION_INSTRUCTIONS,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                dynamic_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        },
     ]
 
 
