@@ -1,0 +1,21 @@
+{
+  "empiar_id": "EMPIAR-12099",
+  "steps": [
+    {
+      "step_index": 0,
+      "node_id": "REF_J7",
+      "job_type": "inspect_picks_v2",
+      "title": "Reference inspect picks",
+      "parents": [],
+      "params": {"min_score": 0.0, "max_score": 1.0}
+    },
+    {
+      "step_index": 1,
+      "node_id": "REF_J8",
+      "job_type": "extract_micrographs_multi",
+      "title": "Reference extraction",
+      "parents": ["REF_J7"],
+      "params": {"box_size_pix": 400, "compute_num_gpus": 4}
+    }
+  ]
+}

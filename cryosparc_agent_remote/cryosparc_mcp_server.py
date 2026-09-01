@@ -14,6 +14,14 @@ from cryosparc_cli_tools import (
     cryosparc_version,
     cryosparc_worker_gpulist,
 )
+from job_specs import list_supported_job_types
+from job_result import get_job_result_package as registry_get_job_result_package
+from job_result import wait_for_job_result_package as registry_wait_for_job_result_package
+from model_input_builder import build_model_input_payload as registry_build_model_input_payload
+from v2_decision_adapter import (
+    adapt_v2_decision_to_internal,
+    execute_v2_model_decision_payload,
+)
 from workflow_state import extract_workflow_state
 
 
@@ -91,10 +99,22 @@ def create_cryosparc_import_movies_job(
 
 # Workflow state and model-alignment tools.
 @mcp.tool()
+def get_supported_job_types() -> dict:
+    """
+    Return job types with explicit local metadata for generic execution plans.
+    """
+    return {
+        "success": True,
+        "job_types": list_supported_job_types(),
+    }
+
+
+@mcp.tool()
 def get_candidate_actions(
     project_uid: str,
     workspace_uid: str,
     current_node_id: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
 ) -> dict:
     """
     Return the candidate actions currently recognized by the MCP adapter.
@@ -103,6 +123,7 @@ def get_candidate_actions(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
+        dataset_info=dataset_info,
     )
 
 
@@ -144,14 +165,10 @@ def validate_model_decision(
         decision,
         candidate_actions=candidate_actions,
         expected_state_snapshot_id=(
-            candidate_context["state_snapshot_id"]
-            if candidate_context
-            else None
+            candidate_context["state_snapshot_id"] if candidate_context else None
         ),
         expected_candidate_set_id=(
-            candidate_context["candidate_set_id"]
-            if candidate_context
-            else None
+            candidate_context["candidate_set_id"] if candidate_context else None
         ),
     )
 
@@ -168,8 +185,8 @@ def execute_model_decision(
     """
     Validate a model decision and return the execution plan.
 
-    Defaults to dry-run mode. The current implementation never creates or
-    queues CryoSPARC jobs.
+    Defaults to dry-run mode. Live execution requires dry_run=false and the
+    necessary execution context and approval policy.
     """
     candidate_context = None
     if project_uid and workspace_uid:
@@ -184,16 +201,179 @@ def execute_model_decision(
         decision,
         candidate_actions=candidate_actions,
         expected_state_snapshot_id=(
-            candidate_context["state_snapshot_id"]
-            if candidate_context
-            else None
+            candidate_context["state_snapshot_id"] if candidate_context else None
         ),
         expected_candidate_set_id=(
-            candidate_context["candidate_set_id"]
-            if candidate_context
-            else None
+            candidate_context["candidate_set_id"] if candidate_context else None
         ),
         dry_run=dry_run,
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+    )
+
+
+@mcp.tool()
+def get_job_result_package(
+    project_uid: str,
+    workspace_uid: str,
+    job_uid: str,
+    include_next_candidates: bool = True,
+) -> dict:
+    """
+    Return model-facing results only after a CryoSPARC job reaches a terminal state.
+
+    Queue/running states are returned as MCP-internal status packages with
+    ready_for_model=false.
+    """
+    return registry_get_job_result_package(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        job_uid=job_uid,
+        include_next_candidates=include_next_candidates,
+    )
+
+
+@mcp.tool()
+def wait_for_job_result_package(
+    project_uid: str,
+    workspace_uid: str,
+    job_uid: str,
+    timeout_seconds: int = 0,
+    poll_interval_seconds: int = 30,
+    include_next_candidates: bool = True,
+) -> dict:
+    """
+    Poll a CryoSPARC job and return a model-facing result package when finished.
+    """
+    return registry_wait_for_job_result_package(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        job_uid=job_uid,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        include_next_candidates=include_next_candidates,
+    )
+
+
+@mcp.tool()
+def build_model_input_payload(
+    project_uid: str,
+    workspace_uid: str,
+    current_job_uid: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
+    known_workflow_dirs: list[str] | None = None,
+) -> dict:
+    """
+    Build the V2 model-facing workflow decision payload.
+
+    Active jobs return MCP-internal status with ready_for_model=false instead of
+    a model-facing payload.
+    """
+    payload = registry_build_model_input_payload(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_job_uid=current_job_uid,
+        dataset_info=dataset_info,
+        known_workflow_dirs=known_workflow_dirs,
+    )
+    return attach_candidate_context(payload, project_uid, workspace_uid)
+
+
+def attach_candidate_context(
+    payload: dict, project_uid: str, workspace_uid: str
+) -> dict:
+    """Attach live Registry candidates to model-facing MCP context."""
+    current = payload.get("current_state", {}).get("last_node_id")
+    if payload.get("ready_for_model") is False:
+        return payload
+    context = registry_get_candidate_actions(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current,
+        dataset_info=payload.get("dataset_info"),
+    )
+    payload["candidate_actions"] = context["candidate_actions"]
+    payload["blocked_actions"] = context["blocked_actions"]
+    payload["candidate_context"] = {
+        "registry_version": context["registry_version"],
+        "current_node_id": context["current_node_id"],
+        "decision_hint": context["decision_hint"],
+    }
+    return payload
+
+
+@mcp.tool()
+def get_workflow_decision_context(
+    project_uid: str,
+    workspace_uid: str,
+    current_job_uid: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
+    known_workflow_dirs: list[str] | None = None,
+) -> dict:
+    """
+    Alias for build_model_input_payload using V2 workflow decision terminology.
+    """
+    payload = registry_build_model_input_payload(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_job_uid=current_job_uid,
+        dataset_info=dataset_info,
+        known_workflow_dirs=known_workflow_dirs,
+    )
+    return attach_candidate_context(payload, project_uid, workspace_uid)
+
+
+@mcp.tool()
+def validate_v2_model_decision(
+    decision: dict[str, Any],
+    project_uid: str,
+    workspace_uid: str,
+    current_node_id: str | None = None,
+) -> dict:
+    """
+    Adapt a V2 model decision to the internal decision schema and validate it.
+    """
+    candidate_context = registry_get_candidate_actions(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
+    )
+    adapter_result = adapt_v2_decision_to_internal(
+        decision,
+        candidate_context["candidate_actions"],
+    )
+    if not adapter_result["success"]:
+        return adapter_result
+    validation = validate_model_decision_payload(
+        adapter_result["internal_decision"],
+        candidate_actions=candidate_context["candidate_actions"],
+    )
+    return {
+        "success": validation["success"],
+        "adapter_result": adapter_result,
+        "validation": validation,
+    }
+
+
+@mcp.tool()
+def execute_v2_model_decision(
+    decision: dict[str, Any],
+    project_uid: str,
+    workspace_uid: str,
+    current_node_id: str | None = None,
+    dry_run: bool = True,
+    allow_approval_required_create: bool = False,
+) -> dict:
+    """
+    Adapt and execute a V2 model decision through the existing internal executor.
+    """
+    return execute_v2_model_decision_payload(
+        decision,
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
+        dry_run=dry_run,
+        allow_approval_required_create=allow_approval_required_create,
     )
 
 

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from cryosparc_cli_tools import cryosparc_client
+from cryosparc_client import cryosparc_client
 
 
 WORKFLOW_STATE_SCHEMA_VERSION = "1.0"
@@ -67,7 +67,7 @@ def content_hash(prefix: str, payload: Any) -> str:
 
 
 def build_logical_node_ids(jobs: list[Any]) -> dict[str, str]:
-    """Assign stable logical node IDs independent of CryoSPARC display titles."""
+    """Assign readable logical node labels for diagnostics."""
     counts: dict[str, int] = {}
     mapping: dict[str, str] = {}
 
@@ -122,10 +122,7 @@ def extract_workflow_state(project_uid: str, workspace_uid: str) -> dict[str, An
         "schema_version": WORKFLOW_STATE_SCHEMA_VERSION,
         "project_uid": project_uid,
         "workspace_uid": workspace_uid,
-        "nodes": [
-            snapshot_node(node)
-            for node in nodes
-        ],
+        "nodes": [snapshot_node(node) for node in nodes],
         "edges": edges,
     }
 
@@ -159,7 +156,8 @@ def extract_job_node(
     for input_name, input_spec in job.inputs.items():
         inputs[input_name] = [
             {
-                "source_workflow_node_id": logical_ids.get(connection.job_uid),
+                "source_workflow_node_id": connection.job_uid,
+                "source_logical_node_id": logical_ids.get(connection.job_uid),
                 "source_job_uid": connection.job_uid,
                 "source_output": connection.output,
                 "result_names": sorted(
@@ -184,8 +182,12 @@ def extract_job_node(
                 }
             ),
             "summary_keys": sorted(output.summary.keys()),
+            "summary_values": to_json_safe(output.summary),
             "latest_summary_stat_keys": sorted(
                 output.latest_summary_stats.keys()
+            ),
+            "latest_summary_stat_values": to_json_safe(
+                output.latest_summary_stats
             ),
         }
         for output_name, output in job.outputs.items()
@@ -210,27 +212,76 @@ def extract_job_node(
     )
 
     return {
-        "workflow_node_id": logical_ids[job.uid],
+        "workflow_node_id": job.uid,
+        "logical_node_id": logical_ids[job.uid],
         "cryosparc_job_uid": job.uid,
         "job_type": job.type,
         "title": job.title,
         "status": job.status,
         "updated_at": job.model.updated_at.isoformat(),
+        "timestamps": {
+            "created_at": optional_isoformat(job.model.created_at),
+            "queued_at": optional_isoformat(job.model.queued_at),
+            "started_at": optional_isoformat(job.model.started_at),
+            "running_at": optional_isoformat(job.model.running_at),
+            "launched_at": optional_isoformat(job.model.launched_at),
+            "completed_at": optional_isoformat(job.model.completed_at),
+            "failed_at": optional_isoformat(job.model.failed_at),
+            "killed_at": optional_isoformat(job.model.killed_at),
+            "heartbeat_at": optional_isoformat(job.model.heartbeat_at),
+            "updated_at": optional_isoformat(job.model.updated_at),
+        },
         "parent_job_uids": parent_job_uids,
         "parent_workflow_node_ids": [
+            uid
+            for uid in parent_job_uids
+        ],
+        "parent_logical_node_ids": [
             logical_ids[uid]
             for uid in parent_job_uids
         ],
         "child_job_uids": child_job_uids,
         "child_workflow_node_ids": [
+            uid
+            for uid in child_job_uids
+        ],
+        "child_logical_node_ids": [
             logical_ids[uid]
             for uid in child_job_uids
         ],
         "inputs": inputs,
         "outputs": outputs,
         "key_parameters": key_parameters,
+        "runtime": extract_runtime(job),
+        "run_errors": extract_run_errors(job),
         "has_error": job.model.has_error,
         "has_warning": job.model.has_warning,
+    }
+
+
+def extract_runtime(job: Any) -> dict[str, Any]:
+    """Extract agreed runtime fields when CryoSPARC exposes them."""
+    model = job.model
+    return {
+        "work_dir": to_json_safe(getattr(model, "job_dir", None)),
+        "lane": to_json_safe(getattr(model, "queued_to_lane", None)),
+        "worker_hostname": to_json_safe(
+            getattr(model, "queued_to_hostname", None)
+        ),
+        "allocated_cpu": None,
+        "allocated_gpu": to_json_safe(getattr(model, "queued_to_gpu", None)),
+        "allocated_ram": None,
+        "allocated_ssd": None,
+    }
+
+
+def extract_run_errors(job: Any) -> dict[str, Any]:
+    """Extract raw CryoSPARC API error fields without interpreting them."""
+    model = job.model
+    return {
+        "errors_run": to_json_safe(getattr(model, "errors_run", None)),
+        "errors_build_inputs": to_json_safe(getattr(model, "errors_build_inputs", None)),
+        "errors_build_params": to_json_safe(getattr(model, "errors_build_params", None)),
     }
 
 
@@ -264,9 +315,10 @@ def build_edges(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def snapshot_node(node: dict[str, Any]) -> dict[str, Any]:
-    """Keep only stable, decision-relevant fields for snapshot hashing."""
+    """Keep stable, decision-relevant fields for stale-decision detection."""
     return {
         "workflow_node_id": node["workflow_node_id"],
+        "logical_node_id": node.get("logical_node_id"),
         "cryosparc_job_uid": node["cryosparc_job_uid"],
         "job_type": node["job_type"],
         "status": node["status"],
@@ -275,6 +327,8 @@ def snapshot_node(node: dict[str, Any]) -> dict[str, Any]:
         "inputs": node["inputs"],
         "outputs": node["outputs"],
         "key_parameters": node["key_parameters"],
+        "runtime": node.get("runtime"),
+        "run_errors": node.get("run_errors"),
         "has_error": node["has_error"],
         "has_warning": node["has_warning"],
     }
@@ -298,11 +352,12 @@ def find_node(
     workflow_state: dict[str, Any],
     node_id: str,
 ) -> dict[str, Any] | None:
-    """Find a node by logical workflow ID or real CryoSPARC job UID."""
+    """Find a node by CryoSPARC job UID, workflow ID, or logical diagnostic ID."""
     for node in workflow_state["nodes"]:
         if node_id in {
-            node["workflow_node_id"],
-            node["cryosparc_job_uid"],
+            node.get("workflow_node_id"),
+            node.get("cryosparc_job_uid"),
+            node.get("logical_node_id"),
         }:
             return node
     return None
@@ -330,4 +385,13 @@ def to_json_safe(value: Any) -> Any:
             to_json_safe(item)
             for item in value
         ]
+    return str(value)
+
+
+def optional_isoformat(value: Any) -> str | None:
+    """Return an ISO timestamp string for nullable CryoSPARC datetime values."""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
     return str(value)
