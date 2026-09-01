@@ -151,7 +151,7 @@ def run_qwen_lora_model(
 
 
 def run_openai_compatible_model(
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     api_base: str,
     api_key: str,
     model_name: str,
@@ -160,6 +160,8 @@ def run_openai_compatible_model(
     timeout_seconds: int = 300,
     max_retries: int = 3,
     retry_backoff_seconds: float = 2.0,
+    prompt_cache_key: Optional[str] = None,
+    prompt_cache_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Call an OpenAI-compatible endpoint with bounded transient-error retries."""
     if not api_base:
@@ -175,6 +177,10 @@ def run_openai_compatible_model(
         "temperature": temperature,
         "max_tokens": max_new_tokens,
     }
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
+    if prompt_cache_options:
+        payload["prompt_cache_options"] = prompt_cache_options
     endpoint = api_base.rstrip("/") + "/chat/completions"
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     req = request.Request(

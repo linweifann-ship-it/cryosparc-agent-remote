@@ -105,6 +105,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-model", default="gpt-5.6-luna")
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument(
+        "--api-prompt-cache-mode",
+        choices=["explicit", "implicit", "disabled"],
+        default="explicit",
+    )
+    parser.add_argument("--api-prompt-cache-key")
+    parser.add_argument("--api-prompt-cache-ttl", default="30m")
     parser.add_argument("--model-python", default=DEFAULT_MODEL_PYTHON)
     parser.add_argument("--model-srun-prefix")
     parser.add_argument("--server-python", default=DEFAULT_SERVER_PYTHON)
@@ -171,6 +178,9 @@ async def main_async() -> None:
             "api_base": args.api_base,
             "api_model": args.api_model,
             "api_key_env": args.api_key_env,
+            "prompt_cache_mode": args.api_prompt_cache_mode,
+            "prompt_cache_key": resolve_prompt_cache_key(args),
+            "prompt_cache_ttl": args.api_prompt_cache_ttl,
         }
     async with AsyncExitStack() as stack:
         if model_worker is not None:
@@ -227,6 +237,8 @@ async def main_async() -> None:
                 model_input=model_input,
                 candidate_context=candidate_context,
                 round_index=round_index,
+                mark_static_cache_breakpoint=args.backend == "api"
+                and args.api_prompt_cache_mode == "explicit",
             )
             messages_file = round_dir / "model_messages.json"
             write_json(messages_file, messages, round_log)
@@ -243,6 +255,8 @@ async def main_async() -> None:
                         args.max_new_tokens,
                         args.temperature,
                         300,
+                        prompt_cache_key=resolve_prompt_cache_key(args),
+                        prompt_cache_options=build_prompt_cache_options(args),
                     )
                     model_call["request_id"] = f"round_{round_index:02d}"
                 else:
@@ -456,7 +470,8 @@ def build_autonomous_prompt(
     model_input: dict[str, Any],
     candidate_context: dict[str, Any],
     round_index: int,
-) -> list[dict[str, str]]:
+    mark_static_cache_breakpoint: bool = False,
+) -> list[dict[str, Any]]:
     dynamic_payload = {
         "round": round_index,
         "model_input": model_input,
@@ -467,11 +482,14 @@ def build_autonomous_prompt(
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "system",
-            "content": json.dumps(
-                STATIC_DECISION_INSTRUCTIONS,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
+            "content": build_cacheable_text_content(
+                json.dumps(
+                    STATIC_DECISION_INSTRUCTIONS,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                mark_static_cache_breakpoint,
             ),
         },
         {
@@ -484,6 +502,38 @@ def build_autonomous_prompt(
             ),
         },
     ]
+
+
+def build_cacheable_text_content(
+    text: str,
+    cache_breakpoint: bool,
+) -> str | list[dict[str, Any]]:
+    if not cache_breakpoint:
+        return text
+    return [
+        {
+            "type": "text",
+            "text": text,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }
+    ]
+
+
+def resolve_prompt_cache_key(args: argparse.Namespace) -> str | None:
+    if args.api_prompt_cache_mode == "disabled":
+        return None
+    if args.api_prompt_cache_key:
+        return args.api_prompt_cache_key
+    return f"cryoagent:{args.project}:{args.workspace}:workflow-v2"
+
+
+def build_prompt_cache_options(args: argparse.Namespace) -> dict[str, Any] | None:
+    if args.api_prompt_cache_mode == "disabled":
+        return None
+    options: dict[str, Any] = {"ttl": args.api_prompt_cache_ttl}
+    if args.api_prompt_cache_mode == "explicit":
+        options["mode"] = "explicit"
+    return options
 
 
 class ModelWorker:
