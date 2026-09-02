@@ -43,16 +43,16 @@ def adapt_v2_decision_to_internal(
     for index, requested in enumerate(requested_actions):
         candidate = match_candidate(requested, candidate_actions)
         if candidate is not None:
-            selected_actions.append(
-                {
-                    "action_id": candidate["action_id"],
-                    "action_type": candidate["action_type"],
-                    "workflow_node_id": candidate["workflow_node_id"],
-                    "job_type": candidate["job_type"],
-                    "parameters": requested.get("parameters") or {},
-                    "connections": requested.get("connections"),
-                }
-            )
+            selected_action = {
+                "action_id": candidate["action_id"],
+                "action_type": candidate["action_type"],
+                "workflow_node_id": candidate["workflow_node_id"],
+                "job_type": candidate["job_type"],
+                "parameters": requested.get("parameters") or {},
+            }
+            if requested.get("connections") is not None:
+                selected_action["connections"] = requested.get("connections")
+            selected_actions.append(selected_action)
             continue
         selected_actions.append(
             build_generic_selected_action(requested, current_node_id, index)
@@ -127,6 +127,7 @@ def execute_v2_model_decision_payload(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         allow_approval_required_create=allow_approval_required_create,
+        allow_internal_schema=True,
     )
     return {
         "success": execution_result["success"],
@@ -235,7 +236,7 @@ def build_generic_selected_action(
 ) -> dict[str, Any]:
     """Build an internal action when no candidate matched the model request."""
     job_type = requested.get("job_type") or requested.get("action")
-    return {
+    action = {
         "action_id": requested.get("action_id") or f"generic_{index}_{job_type}",
         "action_type": requested.get("action_type") or "forward",
         "workflow_node_id": (
@@ -244,8 +245,10 @@ def build_generic_selected_action(
         ),
         "job_type": job_type,
         "parameters": requested.get("parameters") or {},
-        "connections": requested.get("connections"),
     }
+    if requested.get("connections") is not None:
+        action["connections"] = requested.get("connections")
+    return action
 
 
 def match_candidate(
@@ -291,11 +294,21 @@ def select_preferred_candidate(
     return sorted(
         candidates,
         key=lambda candidate: (
+            execution_mode_rank(candidate.get("execution_mode")),
             status_rank(candidate.get("reference_status")),
             job_uid_number(candidate.get("reference_job_uid") or ""),
             candidate["action_id"],
         ),
     )[0]
+
+
+def execution_mode_rank(execution_mode: str | None) -> int:
+    """Prefer executable candidates over dry-run references for compact decisions."""
+    if execution_mode == "create_job":
+        return 0
+    if execution_mode == "dry_run_only":
+        return 2
+    return 1
 
 
 def status_rank(status: str | None) -> int:

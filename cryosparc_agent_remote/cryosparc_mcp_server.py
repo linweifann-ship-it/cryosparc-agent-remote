@@ -1,6 +1,7 @@
 # Exposes CryoSPARC helper functions as MCP tools for model-driven workflows.
 from mcp.server.fastmcp import FastMCP
 from typing import Any
+import json
 
 from action_registry import (
     execute_model_decision_payload,
@@ -162,7 +163,7 @@ def validate_model_decision(
         candidate_actions = candidate_context["candidate_actions"]
 
     return validate_model_decision_payload(
-        decision,
+        normalize_decision_argument(decision),
         candidate_actions=candidate_actions,
         expected_state_snapshot_id=(
             candidate_context["state_snapshot_id"] if candidate_context else None
@@ -170,6 +171,7 @@ def validate_model_decision(
         expected_candidate_set_id=(
             candidate_context["candidate_set_id"] if candidate_context else None
         ),
+        allow_internal_schema=False,
     )
 
 
@@ -198,7 +200,7 @@ def execute_model_decision(
         candidate_actions = candidate_context["candidate_actions"]
 
     return execute_model_decision_payload(
-        decision,
+        normalize_decision_argument(decision),
         candidate_actions=candidate_actions,
         expected_state_snapshot_id=(
             candidate_context["state_snapshot_id"] if candidate_context else None
@@ -209,6 +211,7 @@ def execute_model_decision(
         dry_run=dry_run,
         project_uid=project_uid,
         workspace_uid=workspace_uid,
+        allow_internal_schema=False,
     )
 
 
@@ -338,8 +341,9 @@ def validate_v2_model_decision(
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
     )
+    normalized_decision = normalize_decision_argument(decision)
     adapter_result = adapt_v2_decision_to_internal(
-        decision,
+        normalized_decision,
         candidate_context["candidate_actions"],
     )
     if not adapter_result["success"]:
@@ -347,6 +351,7 @@ def validate_v2_model_decision(
     validation = validate_model_decision_payload(
         adapter_result["internal_decision"],
         candidate_actions=candidate_context["candidate_actions"],
+        allow_internal_schema=True,
     )
     return {
         "success": validation["success"],
@@ -368,13 +373,24 @@ def execute_v2_model_decision(
     Adapt and execute a V2 model decision through the existing internal executor.
     """
     return execute_v2_model_decision_payload(
-        decision,
+        normalize_decision_argument(decision),
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
         dry_run=dry_run,
         allow_approval_required_create=allow_approval_required_create,
     )
+
+
+def normalize_decision_argument(decision: Any) -> dict[str, Any]:
+    """Accept JSON object arguments and provider-serialized JSON strings."""
+    if isinstance(decision, dict):
+        return decision
+    if isinstance(decision, str):
+        parsed = json.loads(decision)
+        if isinstance(parsed, dict):
+            return parsed
+    raise TypeError("decision must be a JSON object or JSON object string")
 
 
 if __name__ == "__main__":

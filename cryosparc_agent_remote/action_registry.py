@@ -675,8 +675,46 @@ def validate_model_decision_payload(
     candidate_actions: list[dict[str, Any]] | None = None,
     expected_state_snapshot_id: str | None = None,
     expected_candidate_set_id: str | None = None,
+    allow_internal_schema: bool = True,
 ) -> dict[str, Any]:
     """Validate a model decision without creating or enqueueing CryoSPARC jobs."""
+    if payload.get("schema_version") == "3.0":
+        from v2_decision_adapter import adapt_v2_decision_to_internal
+
+        adapter_result = adapt_v2_decision_to_internal(
+            payload,
+            candidate_actions or [],
+        )
+        if not adapter_result["success"]:
+            result = ValidationResult(
+                success=False,
+                valid_schema=False,
+                valid_actions=False,
+                issues=[
+                    ValidationIssue.model_validate(issue)
+                    for issue in adapter_result.get("issues", [])
+                ],
+            )
+            return result.model_dump()
+        payload = adapter_result["internal_decision"]
+    elif not allow_internal_schema:
+        result = ValidationResult(
+            success=False,
+            valid_schema=False,
+            valid_actions=False,
+            issues=[
+                ValidationIssue(
+                    code="unsupported_schema_version",
+                    message=(
+                        "Model-facing decisions must use schema_version '3.0' "
+                        "with minimal_v3 selected_actions."
+                    ),
+                    path="schema_version",
+                )
+            ],
+        )
+        return result.model_dump()
+
     decision, schema_issues = parse_model_decision(payload)
     if decision is None:
         result = ValidationResult(
@@ -714,6 +752,7 @@ def execute_model_decision_payload(
     project_uid: str | None = None,
     workspace_uid: str | None = None,
     allow_approval_required_create: bool = False,
+    allow_internal_schema: bool = True,
 ) -> dict[str, Any]:
     """
     Convert a validated decision into an execution plan.
@@ -727,6 +766,7 @@ def execute_model_decision_payload(
         candidate_actions=candidate_actions,
         expected_state_snapshot_id=expected_state_snapshot_id,
         expected_candidate_set_id=expected_candidate_set_id,
+        allow_internal_schema=allow_internal_schema,
     )
     if not validation["success"]:
         return {
