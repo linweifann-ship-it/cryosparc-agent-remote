@@ -1,6 +1,6 @@
 # Plans and eventually executes CryoSPARC jobs through a generic job API adapter.
-from typing import Any
 import os
+from typing import Any
 
 from cryosparc_client import cryosparc_client
 from job_specs import get_job_spec
@@ -189,19 +189,27 @@ def execute_job_action(
             ],
         }
 
+    cryosparc_payload = build_cryosparc_payload(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        planned_action=planned_action,
+    )
+    job = None
+    execution_phase = "create_job"
     try:
         cs = cryosparc_client()
         workspace = cs.find_workspace(project_uid, workspace_uid)
         job = workspace.create_job(
-            planned_action["job_type"],
-            connections=planned_action["connections"],
-            params=planned_action["resolved_parameters"],
-            title=f"Agent {planned_action['action_id']}",
-            desc="Created by cryosparc_agent execute_model_decision.",
+            cryosparc_payload["create_job"]["job_type"],
+            connections=cryosparc_payload["create_job"]["connections"],
+            params=cryosparc_payload["create_job"]["params"],
+            title=cryosparc_payload["create_job"]["title"],
+            desc=cryosparc_payload["create_job"]["desc"],
         )
         queue = planned_action["queue"]
         queued = False
         if queue["will_queue"]:
+            execution_phase = "queue_job"
             if queue["lane"]:
                 job.queue(
                     lane=queue["lane"],
@@ -229,13 +237,96 @@ def execute_job_action(
             ),
             "human_action_required": bool(planned_action["approval_required"]),
             "planned_action": planned_action,
+            "diagnostics": {
+                "execution_phase": "completed",
+                "cryosparc_payload": cryosparc_payload,
+                "http_response": None,
+            },
         }
     except Exception as exc:
+        http_response = extract_http_response(exc)
         return {
             "success": False,
             "dry_run": False,
             "status": "failed",
             "error": str(exc),
             "error_type": type(exc).__name__,
+            "project_uid": project_uid,
+            "workspace_uid": workspace_uid,
+            "job_uid": getattr(job, "uid", None),
+            "job_type": planned_action["job_type"],
+            "queued": False,
             "planned_action": planned_action,
+            "diagnostics": {
+                "execution_phase": execution_phase,
+                "cryosparc_payload": cryosparc_payload,
+                "http_response": http_response,
+            },
+            "issues": [
+                {
+                    "severity": "error",
+                    "code": "cryosparc_execution_error",
+                    "message": str(exc),
+                    "path": "cryoSPARC",
+                }
+            ],
         }
+
+
+def build_cryosparc_payload(
+    project_uid: str,
+    workspace_uid: str,
+    planned_action: dict[str, Any],
+) -> dict[str, Any]:
+    """Record the cryosparc-tools operation payload before execution."""
+    queue = planned_action["queue"]
+    return {
+        "project_uid": project_uid,
+        "workspace_uid": workspace_uid,
+        "create_job": {
+            "job_type": planned_action["job_type"],
+            "connections": planned_action["connections"],
+            "params": planned_action["resolved_parameters"],
+            "title": f"Agent {planned_action['action_id']}",
+            "desc": "Created by cryosparc_agent execute_model_decision.",
+        },
+        "queue": {
+            "will_queue": queue["will_queue"],
+            "lane": queue["lane"],
+            "hostname": queue["hostname"],
+            "gpus": queue["gpus"],
+            "cluster_vars": queue["cluster_vars"],
+        },
+    }
+
+
+def extract_http_response(exc: Exception) -> dict[str, Any] | None:
+    """Best-effort extraction for httpx/cryosparc-tools HTTP errors."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    body = None
+    try:
+        body = response.text
+    except Exception:
+        try:
+            body = response.content.decode("utf-8", errors="replace")
+        except Exception:
+            body = None
+    parsed_body: Any = None
+    if body:
+        try:
+            import json
+
+            parsed_body = json.loads(body)
+        except Exception:
+            parsed_body = None
+    request = getattr(response, "request", None)
+    return {
+        "status_code": getattr(response, "status_code", None),
+        "reason_phrase": getattr(response, "reason_phrase", None),
+        "url": str(getattr(request, "url", "")) if request is not None else None,
+        "method": getattr(request, "method", None) if request is not None else None,
+        "body": body,
+        "json": parsed_body,
+    }

@@ -112,6 +112,11 @@ def execute_v2_model_decision_payload(
             "candidate_context": summarize_candidate_context(candidate_context),
             "internal_decision": None,
             "execution_result": None,
+            "diagnostics": {
+                "model_decision": v2_decision,
+                "mcp_normalized_request": None,
+                "candidate_context": summarize_candidate_context(candidate_context),
+            },
             "issues": adapter_result["issues"],
         }
 
@@ -130,6 +135,23 @@ def execute_v2_model_decision_payload(
         "candidate_context": summarize_candidate_context(candidate_context),
         "internal_decision": adapter_result["internal_decision"],
         "execution_result": execution_result,
+        "diagnostics": {
+            "model_decision": v2_decision,
+            "mcp_normalized_request": adapter_result["internal_decision"],
+            "execution_plan": execution_result.get("execution_plan"),
+            "execution_results": [
+                {
+                    "status": result.get("status"),
+                    "success": result.get("success"),
+                    "job_uid": result.get("job_uid"),
+                    "job_type": result.get("job_type"),
+                    "diagnostics": result.get("diagnostics"),
+                    "error": result.get("error"),
+                    "error_type": result.get("error_type"),
+                }
+                for result in execution_result.get("execution_results", [])
+            ],
+        },
         "issues": execution_result.get("issues", []),
         "warnings": execution_result.get("warnings", []),
     }
