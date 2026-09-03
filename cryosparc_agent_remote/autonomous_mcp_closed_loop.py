@@ -101,8 +101,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", choices=["local", "api"], default="local")
     parser.add_argument("--base-model", default=DEFAULT_BASE_MODEL)
     parser.add_argument("--adapter", default=DEFAULT_ADAPTER)
-    parser.add_argument("--api-base", default="https://api.openai.com/v1")
-    parser.add_argument("--api-model", default="gpt-5.6-luna")
+    parser.add_argument("--api-base", default="https://api.ofox.io/v1")
+    parser.add_argument("--api-model", default="openai/gpt-5.6-sol")
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument(
@@ -549,7 +549,9 @@ def summarize_prompt_cache_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
         "usage_reported_count": len(reported),
         "cached_tokens": cached_tokens if cached else None,
         "prompt_tokens": prompt_tokens or None,
-        "cache_hit_ratio": (cached_tokens / prompt_tokens) if prompt_tokens else None,
+        "cache_hit_ratio": (
+            (cached_tokens / prompt_tokens) if prompt_tokens and cached else None
+        ),
         "status": status,
     }
 

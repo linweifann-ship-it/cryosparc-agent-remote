@@ -95,6 +95,7 @@ class ApiPromptCacheTests(unittest.TestCase):
             [{"usage": {"present": False, "cached_tokens": None}}]
         )
         self.assertEqual(unreported["status"], "usage_not_reported")
+        self.assertIsNone(unreported["cache_hit_ratio"])
 
     def test_candidate_context_reuses_model_input_snapshot(self):
         context = self.runner.candidate_context_from_model_input(
