@@ -112,6 +112,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--api-prompt-cache-key")
     parser.add_argument("--api-prompt-cache-ttl", default="30m")
+    parser.add_argument(
+        "--api-prompt-cache-probe",
+        action="store_true",
+        help="Send two identical, no-MCP API requests and record cache usage before a live loop.",
+    )
     parser.add_argument("--model-python", default=DEFAULT_MODEL_PYTHON)
     parser.add_argument("--model-srun-prefix")
     parser.add_argument("--server-python", default=DEFAULT_SERVER_PYTHON)
@@ -182,6 +187,15 @@ async def main_async() -> None:
             "prompt_cache_key": resolve_prompt_cache_key(args),
             "prompt_cache_ttl": args.api_prompt_cache_ttl,
         }
+        if args.api_prompt_cache_probe:
+            probe = await run_prompt_cache_probe(args)
+            summary["prompt_cache_probe"] = probe
+            summary["finished_at"] = utc_now()
+            summary["success"] = probe["success"]
+            summary["stop_reason"] = "prompt_cache_probe"
+            write_json(run_dir / "summary.json", summary, None)
+            print(json.dumps(probe, ensure_ascii=False, indent=2, default=str))
+            return
     async with AsyncExitStack() as stack:
         if model_worker is not None:
             stack.callback(model_worker.close)
@@ -213,16 +227,7 @@ async def main_async() -> None:
                 context_args,
             )
             model_input["failure_context"] = build_failure_context(feedback_to_model)
-            candidate_context = await call_tool_json(
-                session,
-                "get_candidate_actions",
-                {
-                    "project_uid": args.project,
-                    "workspace_uid": args.workspace,
-                    "current_node_id": current_node,
-                    "dataset_info": dataset_info,
-                },
-            )
+            candidate_context = candidate_context_from_model_input(model_input)
             round_log["model_input"] = model_input
             round_log["candidate_context"] = candidate_context
             write_json(round_dir / "model_input.json", model_input, round_log)
@@ -454,6 +459,13 @@ async def main_async() -> None:
         else:
             summary["stop_reason"] = "max_rounds_reached"
 
+    summary["prompt_cache"] = summarize_prompt_cache_calls(
+        [
+            round_log["model_call"]
+            for round_log in summary["rounds"]
+            if isinstance(round_log.get("model_call"), dict)
+        ]
+    )
     summary["finished_at"] = utc_now()
     summary["success"] = summary["stop_reason"] in {"model_stop", "model_complete", "model_request_input", "max_rounds_reached"}
     write_json(run_dir / "summary.json", summary, None)
@@ -502,6 +514,79 @@ def build_autonomous_prompt(
             ),
         },
     ]
+
+
+def candidate_context_from_model_input(model_input: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the candidate snapshot returned by get_workflow_decision_context."""
+    candidate_metadata = model_input.get("candidate_context")
+    return {
+        "success": True,
+        "candidate_actions": model_input.get("candidate_actions", []),
+        "blocked_actions": model_input.get("blocked_actions", []),
+        **(candidate_metadata if isinstance(candidate_metadata, dict) else {}),
+    }
+
+
+def summarize_prompt_cache_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    usages = [call.get("usage") for call in calls if isinstance(call.get("usage"), dict)]
+    reported = [usage for usage in usages if usage.get("present")]
+    cached = [usage.get("cached_tokens") for usage in reported if usage.get("cached_tokens") is not None]
+    prompt_tokens = sum(
+        value
+        for usage in reported
+        for value in [usage.get("prompt_tokens")]
+        if isinstance(value, int)
+    )
+    cached_tokens = sum(value for value in cached if isinstance(value, int))
+    if not reported or not cached:
+        status = "usage_not_reported"
+    elif cached_tokens > 0:
+        status = "hit"
+    else:
+        status = "miss"
+    return {
+        "request_count": len(calls),
+        "usage_reported_count": len(reported),
+        "cached_tokens": cached_tokens if cached else None,
+        "prompt_tokens": prompt_tokens or None,
+        "cache_hit_ratio": (cached_tokens / prompt_tokens) if prompt_tokens else None,
+        "status": status,
+    }
+
+
+async def run_prompt_cache_probe(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify cache reuse without reading MCP or creating cryoSPARC jobs."""
+    if args.api_prompt_cache_mode == "disabled":
+        raise ValueError("--api-prompt-cache-probe requires prompt caching to be enabled.")
+    messages = build_autonomous_prompt(
+        model_input={"probe": "stable prompt cache verification"},
+        candidate_context={"candidate_actions": []},
+        round_index=0,
+        mark_static_cache_breakpoint=args.api_prompt_cache_mode == "explicit",
+    )
+    api_key = resolve_api_key(args.api_key, args.api_key_env)
+    calls = []
+    for request_index in range(1, 3):
+        call = await asyncio.to_thread(
+            run_openai_compatible_model,
+            messages,
+            args.api_base,
+            api_key,
+            args.api_model,
+            64,
+            0.0,
+            300,
+            prompt_cache_key=resolve_prompt_cache_key(args),
+            prompt_cache_options=build_prompt_cache_options(args),
+        )
+        calls.append({"request": request_index, "usage": call.get("usage")})
+    return {
+        "success": True,
+        "mode": args.api_prompt_cache_mode,
+        "cache_key": resolve_prompt_cache_key(args),
+        "calls": calls,
+        "summary": summarize_prompt_cache_calls(calls),
+    }
 
 
 def build_cacheable_text_content(
@@ -910,6 +995,8 @@ def print_run_summary(summary: dict[str, Any], run_dir: Path) -> None:
         print(f"下一轮原因：{round_log.get('next_round_reason')}")
         print(f"日志位置：{round_log.get('files')}")
     print(f"Stop reason: {summary['stop_reason']}")
+    if summary.get("prompt_cache"):
+        print(f"Prompt cache: {json.dumps(summary['prompt_cache'], ensure_ascii=False)}")
     print(f"Summary: {run_dir / 'summary.json'}")
 
 

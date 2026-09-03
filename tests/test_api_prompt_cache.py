@@ -78,6 +78,35 @@ class ApiPromptCacheTests(unittest.TestCase):
         self.assertIsNone(self.runner.resolve_prompt_cache_key(args))
         self.assertIsNone(self.runner.build_prompt_cache_options(args))
 
+    def test_cache_summary_distinguishes_hit_miss_and_unreported_usage(self):
+        hit = self.runner.summarize_prompt_cache_calls(
+            [{"usage": {"present": True, "prompt_tokens": 100, "cached_tokens": 80}}]
+        )
+        self.assertEqual(hit["status"], "hit")
+        self.assertEqual(hit["cache_hit_ratio"], 0.8)
+
+        miss = self.runner.summarize_prompt_cache_calls(
+            [{"usage": {"present": True, "prompt_tokens": 100, "cached_tokens": 0}}]
+        )
+        self.assertEqual(miss["status"], "miss")
+        self.assertEqual(miss["cached_tokens"], 0)
+
+        unreported = self.runner.summarize_prompt_cache_calls(
+            [{"usage": {"present": False, "cached_tokens": None}}]
+        )
+        self.assertEqual(unreported["status"], "usage_not_reported")
+
+    def test_candidate_context_reuses_model_input_snapshot(self):
+        context = self.runner.candidate_context_from_model_input(
+            {
+                "candidate_actions": [{"job_type": "class_2D_new"}],
+                "blocked_actions": [{"job_type": "homo_refine_new"}],
+                "candidate_context": {"current_node_id": "J7", "registry_version": "v2"},
+            }
+        )
+        self.assertEqual(context["candidate_actions"][0]["job_type"], "class_2D_new")
+        self.assertEqual(context["current_node_id"], "J7")
+
 
 if __name__ == "__main__":
     unittest.main()
