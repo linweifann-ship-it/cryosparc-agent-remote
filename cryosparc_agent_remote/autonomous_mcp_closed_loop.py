@@ -794,7 +794,7 @@ async def call_tool_json(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     result = await session.call_tool(tool_name, arguments)
-    if result.isError:
+    if getattr(result, "is_error", getattr(result, "isError", False)):
         return {
             "success": False,
             "mcp_error": True,

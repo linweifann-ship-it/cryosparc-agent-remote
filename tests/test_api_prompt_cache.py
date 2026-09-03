@@ -1,9 +1,11 @@
 import importlib.util
+import asyncio
 import sys
 import types
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def load_api_runner_module():
@@ -116,6 +118,14 @@ class ApiPromptCacheTests(unittest.TestCase):
         self.assertEqual(audit["round"], 1)
         self.assertIn("prompt_cache_breakpoint", audit["breakpoint_prefix"])
         self.assertNotEqual(audit["system1_sha256"], audit["dynamic_input_sha256"])
+
+    def test_call_tool_accepts_current_mcp_is_error_field(self):
+        class Session:
+            async def call_tool(self, tool_name, arguments):
+                return SimpleNamespace(is_error=True, content=[])
+
+        result = asyncio.run(self.runner.call_tool_json(Session(), "tool", {}))
+        self.assertTrue(result["mcp_error"])
 
 
 if __name__ == "__main__":
