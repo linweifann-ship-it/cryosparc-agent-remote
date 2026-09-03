@@ -9,6 +9,7 @@ from cryosparc_agent_remote.openai_agents_runner import (
     build_step_input,
     config_from_args,
     contains_stop,
+    extract_usage,
     extract_created_jobs,
     summarize_prompt_cache,
 )
@@ -37,10 +38,16 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             mcp_stdio_command=None,
             use_responses_api=False,
         )
-        payload = json.loads(build_step_input(config, "J7", 2))
+        messages = build_step_input(config, "J7", 2)
+        self.assertEqual([message["role"] for message in messages], ["system", "system", "user"])
+        self.assertEqual(messages[1]["content"][0]["type"], "text")
+        self.assertEqual(
+            messages[1]["content"][0]["prompt_cache_breakpoint"], {"mode": "explicit"}
+        )
+        payload = json.loads(messages[2]["content"])
         self.assertEqual(payload["run_scope"]["project_uid"], "P2")
         self.assertEqual(payload["run_scope"]["current_node_id"], "J7")
-        self.assertIn("get_workflow_decision_context", payload["required_mcp_sequence"])
+        self.assertNotIn("output_contract", payload)
 
     def test_extract_created_jobs_deduplicates_nested_job_packages(self):
         event = {
@@ -63,6 +70,23 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
         self.assertEqual(summary["cached_input_tokens"], 65)
         self.assertEqual(summary["output_tokens"], 30)
         self.assertAlmostEqual(summary["cache_hit_ratio"], 65 / 150)
+
+    def test_extract_usage_prefers_raw_provider_usage_without_double_counting(self):
+        event = {
+            "raw_responses": [
+                {
+                    "usage": {"input_tokens": 100, "output_tokens": 20},
+                    "raw_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "input_tokens_details": {"cached_tokens": 80},
+                    },
+                }
+            ]
+        }
+        summary = extract_usage(event)["summary"]
+        self.assertEqual(summary["usage_record_count"], 1)
+        self.assertEqual(summary["cached_input_tokens"], 80)
 
     def test_contains_stop_reads_final_json(self):
         self.assertTrue(contains_stop('{"decision_type":"stop"}'))

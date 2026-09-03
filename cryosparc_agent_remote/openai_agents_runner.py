@@ -53,6 +53,26 @@ STATIC_OUTPUT_CONTRACT = {
     },
 }
 
+# This entire object is independent of a particular cryoSPARC workspace.  It
+# is deliberately the second fixed system layer: its final text content block
+# is the explicit cache boundary immediately before per-step state.
+STATIC_MCP_PROTOCOL = {
+    "required_mcp_sequence": [
+        "get_workflow_decision_context",
+        "validate_v2_model_decision when you have a candidate decision",
+        "execute_v2_model_decision with dry_run=false for executable decisions",
+        "wait_for_job_result_package for created jobs",
+    ],
+    "output_contract": STATIC_OUTPUT_CONTRACT,
+}
+
+CLOSED_LOOP_MCP_TOOLS = [
+    "get_workflow_decision_context",
+    "validate_v2_model_decision",
+    "execute_v2_model_decision",
+    "wait_for_job_result_package",
+]
+
 
 @dataclass
 class AgentsRunConfig:
@@ -77,7 +97,10 @@ class AgentsRunConfig:
     use_responses_api: bool
 
 
-def build_step_input(config: AgentsRunConfig, current_node: str | None, step: int) -> str:
+def build_step_input(
+    config: AgentsRunConfig, current_node: str | None, step: int
+) -> list[dict[str, Any]]:
+    """Build two stable system layers followed by the dynamic workflow state."""
     payload = {
         "run_scope": {
             "project_uid": config.project_uid,
@@ -85,12 +108,6 @@ def build_step_input(config: AgentsRunConfig, current_node: str | None, step: in
             "current_node_id": current_node,
             "step": step,
         },
-        "required_mcp_sequence": [
-            "get_workflow_decision_context",
-            "validate_v2_model_decision when you have a candidate decision",
-            "execute_v2_model_decision with dry_run=false for executable decisions",
-            "wait_for_job_result_package for created jobs",
-        ],
         "mcp_arguments": {
             "project_uid": config.project_uid,
             "workspace_uid": config.workspace_uid,
@@ -100,14 +117,37 @@ def build_step_input(config: AgentsRunConfig, current_node: str | None, step: in
             "wait_timeout_seconds": config.wait_timeout_seconds,
             "poll_interval_seconds": config.poll_interval_seconds,
         },
-        "output_contract": STATIC_OUTPUT_CONTRACT,
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    static_content_type = "input_text" if config.use_responses_api else "text"
+    return [
+        {"role": "system", "content": STATIC_AGENT_INSTRUCTIONS},
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": static_content_type,
+                    "text": json.dumps(
+                        STATIC_MCP_PROTOCOL,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+        },
+    ]
 
 
 async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
     Agent, Runner, ModelSettings, RunConfig, ResponsesModel, ChatModel, AsyncOpenAI, _function_tool = import_agents_core()
-    MCPServerStdio = import_mcp_stdio()
+    MCPServerStdio, create_static_tool_filter = import_mcp_stdio()
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(config.output_dir / "model_requests.jsonl", {"event": "run_started", "run_id": config.run_id})
@@ -124,20 +164,24 @@ async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
     mcp_server = MCPServerStdio(
         params=mcp_params,
         cache_tools_list=True,
+        tool_filter=create_static_tool_filter(allowed_tool_names=CLOSED_LOOP_MCP_TOOLS),
         name="existing-cryoSPARC-mcp",
         client_session_timeout_seconds=None,
     )
     agent = Agent(
         name="cryoSPARC Agents SDK loop",
-        instructions=STATIC_AGENT_INSTRUCTIONS,
+        instructions=None,
         mcp_servers=[mcp_server],
         model=model_obj,
         model_settings=ModelSettings(
             max_tokens=2048,
             include_usage=True,
+            # The SDK maps this field to the provider's native cache options.
+            # Keep the provider-specific cache key in extra_body.
+            prompt_cache_options={"mode": "explicit", "ttl": "30m"},
+            preserve_raw_usage=True,
             extra_body={
                 "prompt_cache_key": f"cryoagent:{config.project_uid}:{config.workspace_uid}:agents-sdk-v1",
-                "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
             },
         ),
     )
@@ -168,7 +212,7 @@ async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
         write_jsonl(config.output_dir / "mcp_calls.jsonl", {"event": "tools_listed", "tools": summary["mcp_tools"]})
         for step in range(1, config.max_steps + 1):
             user_input = build_step_input(config, current_node, step)
-            request_event = {"step": step, "input": json.loads(user_input), "api_mode": api_mode}
+            request_event = {"step": step, "input": user_input, "api_mode": api_mode}
             write_jsonl(config.output_dir / "model_requests.jsonl", request_event)
             result = await Runner.run(
                 agent,
@@ -299,13 +343,13 @@ def import_agents_core():
 
 def import_mcp_stdio():
     try:
-        from agents.mcp import MCPServerStdio
+        from agents.mcp import MCPServerStdio, create_static_tool_filter
     except Exception as exc:
         raise RuntimeError(
             "OpenAI Agents SDK MCP stdio support is required. Install package mcp "
             "in the same Python runtime used to run this script."
         ) from exc
-    return MCPServerStdio
+    return MCPServerStdio, create_static_tool_filter
 
 
 def serialize_run_result(result: Any) -> dict[str, Any]:
@@ -346,6 +390,7 @@ def serialize_unknown(value: Any) -> Any:
         "usage",
         "response_id",
         "model",
+        "raw_usage",
     ):
         if hasattr(value, name):
             attr = getattr(value, name)
@@ -395,10 +440,22 @@ def extract_observations(event: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def extract_usage(event: dict[str, Any]) -> dict[str, Any]:
-    usages = []
-    for item in walk(event):
-        if isinstance(item, dict) and isinstance(item.get("usage"), dict):
-            usages.append(item["usage"])
+    usages: list[dict[str, Any]] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            raw_usage = value.get("raw_usage")
+            usage = raw_usage if isinstance(raw_usage, dict) else value.get("usage")
+            if isinstance(usage, dict):
+                usages.append(usage)
+            for key, child in value.items():
+                if key not in {"raw_usage", "usage"}:
+                    collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(event)
     return {"usage_records": usages, "summary": summarize_prompt_cache(usages)}
 
 
@@ -416,10 +473,11 @@ def summarize_prompt_cache(usages: list[dict[str, Any]]) -> dict[str, Any]:
         cached_tokens += cached if isinstance(cached, int) else 0
     ratio = (cached_tokens / input_tokens) if input_tokens else None
     return {
-        "input_tokens": input_tokens or None,
-        "cached_input_tokens": cached_tokens or None,
-        "output_tokens": output_tokens or None,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_tokens,
+        "output_tokens": output_tokens,
         "cache_hit_ratio": ratio,
+        "usage_record_count": len(usages),
     }
 
 
