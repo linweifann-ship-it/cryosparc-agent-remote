@@ -108,6 +108,15 @@ class ApiPromptCacheTests(unittest.TestCase):
         self.assertEqual(context["candidate_actions"][0]["job_type"], "class_2D_new")
         self.assertEqual(context["current_node_id"], "J7")
 
+    def test_request_audit_keeps_fixed_layers_out_of_dynamic_hash(self):
+        messages = self.runner.build_autonomous_prompt(
+            {"state": "dynamic"}, {"candidate_actions": []}, 1, True
+        )
+        audit = self.runner.build_request_audit(messages, 1, "J7")
+        self.assertEqual(audit["round"], 1)
+        self.assertIn("prompt_cache_breakpoint", audit["breakpoint_prefix"])
+        self.assertNotEqual(audit["system1_sha256"], audit["dynamic_input_sha256"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -194,6 +194,7 @@ def run_openai_compatible_model(
     )
     retryable_http_codes = {408, 429, 500, 502, 503, 504}
     attempts = 0
+    request_started = time.perf_counter()
     while True:
         attempts += 1
         try:
@@ -226,6 +227,9 @@ def run_openai_compatible_model(
     return {
         "endpoint": endpoint,
         "request_payload": payload,
+        "exact_serialized_request": body.decode("utf-8"),
+        "request_chars": len(body),
+        "latency_ms": round((time.perf_counter() - request_started) * 1000, 3),
         "raw_response": parsed,
         "usage": extract_usage_summary(parsed),
         "raw_text": raw_text,

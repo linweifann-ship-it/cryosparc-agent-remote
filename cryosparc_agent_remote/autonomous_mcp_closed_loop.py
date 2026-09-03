@@ -1,6 +1,7 @@
 # Run an autonomous model -> MCP -> CryoSPARC closed-loop test.
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shlex
@@ -105,6 +106,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-model", default="openai/gpt-5.6-sol")
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--model-provider", choices=["ofox_chat"])
+    parser.add_argument("--ofox-base-url")
+    parser.add_argument("--ofox-model")
     parser.add_argument(
         "--api-prompt-cache-mode",
         choices=["explicit", "implicit", "disabled"],
@@ -136,6 +140,12 @@ def parse_args() -> argparse.Namespace:
 
 async def main_async() -> None:
     args = parse_args()
+    if args.model_provider == "ofox_chat":
+        if not args.ofox_base_url or not args.ofox_model:
+            raise ValueError("ofox_chat requires --ofox-base-url and --ofox-model.")
+        args.backend = "api"
+        args.api_base = args.ofox_base_url
+        args.api_model = args.ofox_model
     run_dir = make_run_dir(Path(args.output_dir))
     dataset_info = load_dataset_info(args)
     summary: dict[str, Any] = {
@@ -247,6 +257,9 @@ async def main_async() -> None:
             )
             messages_file = round_dir / "model_messages.json"
             write_json(messages_file, messages, round_log)
+            request_audit = build_request_audit(messages, round_index, current_node)
+            round_log["model_request_audit"] = request_audit
+            write_json(round_dir / "model_request_audit.json", request_audit, round_log)
 
             generation_file = round_dir / "model_generation.json"
             try:
@@ -289,6 +302,14 @@ async def main_async() -> None:
                 print_run_summary(summary, run_dir)
                 return
             round_log["model_call"] = model_call
+            request_audit["model_call"] = {
+                "latency_ms": model_call.get("latency_ms"),
+                "usage": model_call.get("usage"),
+                "exact_serialized_request": model_call.get("exact_serialized_request"),
+                "tools": [],
+                "tools_note": "MCP tools are invoked by the runner before and after the model call; no tool schema is sent to this direct chat-completions model request.",
+            }
+            write_json(round_dir / "model_request_audit.json", request_audit, round_log)
             round_log["raw_model_output_file"] = str(generation_file)
             write_json(generation_file, model_call, round_log)
             generation = model_call
@@ -466,6 +487,7 @@ async def main_async() -> None:
             if isinstance(round_log.get("model_call"), dict)
         ]
     )
+    summary["prompt_comparison"] = compare_prompt_audits(summary["rounds"])
     summary["finished_at"] = utc_now()
     summary["success"] = summary["stop_reason"] in {"model_stop", "model_complete", "model_request_input", "max_rounds_reached"}
     write_json(run_dir / "summary.json", summary, None)
@@ -514,6 +536,49 @@ def build_autonomous_prompt(
             ),
         },
     ]
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_request_audit(
+    messages: list[dict[str, Any]], round_index: int, current_node: str | None
+) -> dict[str, Any]:
+    system1 = str(messages[0]["content"])
+    system2_content = messages[1]["content"]
+    system2 = str(system2_content[0].get("text", "")) if isinstance(system2_content, list) else str(system2_content)
+    dynamic = str(messages[2]["content"])
+    prefix = json.dumps(messages[:2], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "round": round_index,
+        "current_node": current_node,
+        "system1": system1,
+        "system1_sha256": sha256_text(system1),
+        "system2": system2,
+        "system2_sha256": sha256_text(system2),
+        "breakpoint_prefix": prefix,
+        "breakpoint_prefix_sha256": sha256_text(prefix),
+        "breakpoint_prefix_chars": len(prefix),
+        "breakpoint_prefix_tokens": None,
+        "dynamic_input": dynamic,
+        "dynamic_input_sha256": sha256_text(dynamic),
+    }
+
+
+def compare_prompt_audits(rounds: list[dict[str, Any]]) -> dict[str, Any]:
+    audits = [round_log.get("model_request_audit") for round_log in rounds]
+    audits = [audit for audit in audits if isinstance(audit, dict)]
+    def unique(field: str) -> list[str]:
+        return sorted({str(audit.get(field)) for audit in audits})
+    stable_fields = ("system1_sha256", "system2_sha256", "breakpoint_prefix_sha256")
+    values = {field: unique(field) for field in stable_fields}
+    return {
+        "rounds_with_model_requests": len(audits),
+        "cross_round_fixed": {field: hashes[0] for field, hashes in values.items() if len(hashes) == 1},
+        "dynamic_workflow_state_hashes": unique("dynamic_input_sha256"),
+        "unexpected_unstable_fixed_content": {field: hashes for field, hashes in values.items() if len(hashes) > 1},
+    }
 
 
 def candidate_context_from_model_input(model_input: dict[str, Any]) -> dict[str, Any]:
