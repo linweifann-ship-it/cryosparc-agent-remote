@@ -21,20 +21,13 @@ DEFAULT_PROJECT_DIR = "/ssd1/linweifan/cryosparc_agent"
 DEFAULT_MCP_SERVER = "cryosparc_mcp_server.py"
 
 STATIC_AGENT_INSTRUCTIONS = (
-    "You are the only decision maker for an autonomous CryoSPARC workflow test. "
-    "Use only the connected MCP tools to inspect state, validate decisions, create "
-    "CryoSPARC jobs, queue jobs, wait for terminal job results, and read observations. "
-    "Do not ask the runner to infer workflow steps for you. Do not invent job types "
-    "or hidden upstream outputs. Do not skip mandatory human or visual gates when "
-    "the MCP observation marks them as required. Static tool contracts and JSON "
-    "schemas are fixed; dynamic project, workspace, job, run, and timestamp values "
-    "appear only in the user payload. When you decide to execute work, call "
-    "execute_v2_model_decision with dry_run=false, then call "
-    "wait_for_job_result_package for every created job until a terminal observation "
-    "is returned. Model-facing decisions must use the strict MCP v3.0 minimal "
-    "contract: only schema_version, decision_type, and selected_actions. If the "
-    "next safe step is unclear, call stop by returning a final JSON object with "
-    "decision_type='stop' and selected_actions=[]."
+    "You are the only workflow and scientific decision maker for an autonomous CryoSPARC "
+    "workflow. MCP provides state, validation, execution, observations, and errors; use its "
+    "tools rather than asking the runner to infer a workflow step. Use only current MCP state "
+    "or tool evidence: never invent jobs, outputs, metrics, visual observations, connections, "
+    "rollback targets, or execution results. Return a complete valid MCP v3.0 minimal decision; "
+    "do not assume MCP will repair a decision. Dynamic project, workspace, node, job, and run "
+    "facts belong only in the user payload."
 )
 
 STATIC_OUTPUT_CONTRACT = {
@@ -64,6 +57,23 @@ STATIC_MCP_PROTOCOL = {
         "wait_for_job_result_package for created jobs",
     ],
     "output_contract": STATIC_OUTPUT_CONTRACT,
+    "decision_rules": [
+        "Use forward for one evidence-supported next action, branch only for a meaningful scientific comparison, and stop when no safe justified action remains.",
+        "selected_actions must contain only MCP-visible executable job types; parameters contain only non-default overrides.",
+        "MCP validates source outputs, input compatibility, and execution. Do not claim a connection or job result not returned by MCP.",
+        "For missing evidence or an unavailable safe action, obtain the relevant MCP state or stop; this v3 contract has no request_input or rollback decision type.",
+    ],
+    "interactive_qc_rules": {
+        "inspect_picks": "Use supplied micrograph or pick overlays, NCC or CC, power, score distributions, particle counts, and other available evidence. Adjust or accept thresholds only when evidence supports it; do not claim visual inspection without supplied visual evidence.",
+        "select_2d": "Use supplied class averages, class counts, and statistics to retain structurally suitable classes and reject clear junk, contamination, aggregation, background, or misalignment. Multiple Select 2D steps are allowed when MCP exposes them.",
+        "human_review": "A traditionally manual step is not automatically human-only when sufficient machine-readable or visual evidence is supplied. Respect MCP-required human gates; otherwise stop rather than guess when evidence is insufficient.",
+    },
+    "failure_and_science_rules": [
+        "Base recovery only on real MCP execution results or observations. Do not repeat an unchanged failed action without new evidence or a legal changed parameter or input.",
+        "Respect scientific dependencies: CTF estimation normally precedes CTF-dependent picking; assess available pick QC before large extraction; assess available 2D class QC before 3D reconstruction; refinement requires a valid volume and compatible particles.",
+        "Completed means computation succeeded, not scientific quality. Weigh metrics, images, counts, and observations together; particle count alone is not quality, and clearly poor 2D classes must not be retained merely to increase count.",
+        "Inspect Picks and Select 2D are high-value QC checkpoints, not unconditional gates when existing evidence supports another scientifically justified path.",
+    ],
 }
 
 CLOSED_LOOP_MCP_TOOLS = [
