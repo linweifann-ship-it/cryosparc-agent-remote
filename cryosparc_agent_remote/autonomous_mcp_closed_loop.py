@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import hashlib
+import itertools
 import json
 import os
 import shlex
@@ -154,7 +155,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--server-python", default=DEFAULT_SERVER_PYTHON)
     parser.add_argument("--project-dir", default=DEFAULT_PROJECT_DIR)
     parser.add_argument("--mcp-server", default=DEFAULT_MCP_SERVER)
-    parser.add_argument("--max-rounds", type=int, default=8)
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=8,
+        help="Maximum model rounds; use 0 for no runner-imposed round limit.",
+    )
     parser.add_argument("--max-validation-failures", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=768)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -241,7 +247,8 @@ async def main_async() -> None:
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
 
-        for round_index in range(1, args.max_rounds + 1):
+        round_indices = itertools.count(1) if args.max_rounds == 0 else range(1, args.max_rounds + 1)
+        for round_index in round_indices:
             round_dir = run_dir / f"round_{round_index:02d}"
             round_dir.mkdir(parents=True, exist_ok=True)
             round_log: dict[str, Any] = {
