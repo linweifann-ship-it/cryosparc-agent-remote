@@ -4,6 +4,13 @@ import os
 
 from cryosparc_client import cryosparc_client
 from job_specs import get_job_spec
+from resource_scheduler import (
+    apply_resource_overrides,
+    build_scheduling_plan,
+    make_logical_job_record,
+    probe_cluster_resources,
+    register_submission,
+)
 
 
 def plan_job_action(
@@ -26,7 +33,13 @@ def plan_job_action(
         connections = build_connections(
             (candidate_action or {}).get("required_inputs", {})
         )
-    queue = build_queue_plan(spec, lane)
+    scheduling = build_scheduling_plan(
+        job_type=job_type,
+        spec=spec,
+        params=action["resolved_parameters"],
+        requested_lane=lane,
+    )
+    queue = scheduling["queue"]
     approval_reasons = approval_reasons_for(action, spec)
 
     return {
@@ -41,6 +54,7 @@ def plan_job_action(
         "connections": connections,
         "resolved_parameters": action["resolved_parameters"],
         "queue": queue,
+        "resource_scheduling": scheduling,
         "requires_gpu": spec["requires_gpu"],
         "interactive": spec["interactive"],
         "approval_required": bool(
@@ -189,13 +203,25 @@ def execute_job_action(
             ],
         }
 
+    scheduling = refresh_scheduling_plan(planned_action)
+    planned_action = {
+        **planned_action,
+        "queue": scheduling["queue"],
+        "resource_scheduling": scheduling,
+    }
+    params = apply_resource_overrides(
+        planned_action["resolved_parameters"],
+        scheduling.get("parameter_overrides") or {},
+    )
+    logical_record = make_logical_job_record(planned_action)
+
     try:
         cs = cryosparc_client()
         workspace = cs.find_workspace(project_uid, workspace_uid)
         job = workspace.create_job(
             planned_action["job_type"],
             connections=planned_action["connections"],
-            params=planned_action["resolved_parameters"],
+            params=params,
             title=f"Agent {planned_action['action_id']}",
             desc="Created by cryosparc_agent execute_model_decision.",
         )
@@ -212,6 +238,13 @@ def execute_job_action(
             else:
                 job.queue()
             queued = True
+        register_submission(
+            logical_record,
+            job.uid,
+            scheduling["resource_config"],
+            scheduling["snapshot"],
+            scheduling["reason"],
+        )
 
         return {
             "success": True,
@@ -229,6 +262,10 @@ def execute_job_action(
             ),
             "human_action_required": bool(planned_action["approval_required"]),
             "planned_action": planned_action,
+            "resource_scheduling": {
+                "logical_job": logical_record.__dict__,
+                "effective_parameters": params,
+            },
         }
     except Exception as exc:
         return {
@@ -238,4 +275,22 @@ def execute_job_action(
             "error": str(exc),
             "error_type": type(exc).__name__,
             "planned_action": planned_action,
+            "resource_scheduling": {
+                "logical_job": logical_record.__dict__,
+                "effective_parameters": params,
+            },
         }
+
+
+def refresh_scheduling_plan(planned_action: dict[str, Any]) -> dict[str, Any]:
+    """Refresh resource state immediately before live submission."""
+    existing = planned_action.get("resource_scheduling") or {}
+    queue = planned_action.get("queue") or {}
+    spec = get_job_spec(planned_action["job_type"])
+    return build_scheduling_plan(
+        job_type=planned_action["job_type"],
+        spec=spec,
+        params=planned_action["resolved_parameters"],
+        requested_lane=queue.get("lane") or existing.get("selected_lane"),
+        resource_snapshot=probe_cluster_resources(),
+    )
