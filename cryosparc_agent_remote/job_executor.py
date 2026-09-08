@@ -4,6 +4,13 @@ from typing import Any
 
 from cryosparc_client import cryosparc_client
 from job_specs import get_job_spec
+from resource_scheduler import (
+    apply_resource_overrides,
+    build_scheduling_plan,
+    make_logical_job_record,
+    probe_cluster_resources,
+    register_submission,
+)
 
 
 def plan_job_action(
@@ -26,7 +33,13 @@ def plan_job_action(
         connections = build_connections(
             (candidate_action or {}).get("required_inputs", {})
         )
-    queue = build_queue_plan(spec, lane)
+    scheduling = build_scheduling_plan(
+        job_type=job_type,
+        spec=spec,
+        params=action["resolved_parameters"],
+        requested_lane=lane,
+    )
+    queue = scheduling["queue"]
     approval_reasons = approval_reasons_for(action, spec)
 
     return {
@@ -41,6 +54,7 @@ def plan_job_action(
         "connections": connections,
         "resolved_parameters": action["resolved_parameters"],
         "queue": queue,
+        "resource_scheduling": scheduling,
         "requires_gpu": spec["requires_gpu"],
         "interactive": spec["interactive"],
         "approval_required": bool(
@@ -189,10 +203,22 @@ def execute_job_action(
             ],
         }
 
+    scheduling = refresh_scheduling_plan(planned_action)
+    planned_action = {
+        **planned_action,
+        "queue": scheduling["queue"],
+        "resource_scheduling": scheduling,
+    }
+    params = apply_resource_overrides(
+        planned_action["resolved_parameters"],
+        scheduling.get("parameter_overrides") or {},
+    )
+    logical_record = make_logical_job_record(planned_action)
     cryosparc_payload = build_cryosparc_payload(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         planned_action=planned_action,
+        params=params,
     )
     job = None
     execution_phase = "create_job"
@@ -220,6 +246,13 @@ def execute_job_action(
             else:
                 job.queue()
             queued = True
+        register_submission(
+            logical_record,
+            job.uid,
+            scheduling["resource_config"],
+            scheduling["snapshot"],
+            scheduling["reason"],
+        )
 
         return {
             "success": True,
@@ -241,6 +274,10 @@ def execute_job_action(
                 "execution_phase": "completed",
                 "cryosparc_payload": cryosparc_payload,
                 "http_response": None,
+            },
+            "resource_scheduling": {
+                "logical_job": logical_record.__dict__,
+                "effective_parameters": params,
             },
         }
     except Exception as exc:
@@ -270,13 +307,32 @@ def execute_job_action(
                     "path": "cryoSPARC",
                 }
             ],
+            "resource_scheduling": {
+                "logical_job": logical_record.__dict__,
+                "effective_parameters": params,
+            },
         }
+
+
+def refresh_scheduling_plan(planned_action: dict[str, Any]) -> dict[str, Any]:
+    """Refresh resource state immediately before live submission."""
+    existing = planned_action.get("resource_scheduling") or {}
+    queue = planned_action.get("queue") or {}
+    spec = get_job_spec(planned_action["job_type"])
+    return build_scheduling_plan(
+        job_type=planned_action["job_type"],
+        spec=spec,
+        params=planned_action["resolved_parameters"],
+        requested_lane=queue.get("lane") or existing.get("selected_lane"),
+        resource_snapshot=probe_cluster_resources(),
+    )
 
 
 def build_cryosparc_payload(
     project_uid: str,
     workspace_uid: str,
     planned_action: dict[str, Any],
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record the cryosparc-tools operation payload before execution."""
     queue = planned_action["queue"]
@@ -286,7 +342,7 @@ def build_cryosparc_payload(
         "create_job": {
             "job_type": planned_action["job_type"],
             "connections": planned_action["connections"],
-            "params": planned_action["resolved_parameters"],
+            "params": params if params is not None else planned_action["resolved_parameters"],
             "title": f"Agent {planned_action['action_id']}",
             "desc": "Created by cryosparc_agent execute_model_decision.",
         },
