@@ -253,11 +253,23 @@ async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
                 summary["success"] = True
                 break
             if not created_jobs:
-                summary["stop_reason"] = "no_created_job"
-                break
+                write_jsonl(
+                    config.output_dir / "observations.jsonl",
+                    {
+                        "step": step,
+                        "observation": {
+                            "event": "no_created_job_continue",
+                            "message": (
+                                "No job was created in this step and the model did not "
+                                "stop; continue so validation/tool feedback can remain "
+                                "model-owned."
+                            ),
+                        },
+                    },
+                )
         else:
             summary["stop_reason"] = "max_steps_reached"
-            summary["success"] = True
+            summary["success"] = False
     finally:
         await mcp_server.cleanup()
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -111,11 +112,10 @@ def configured_gpu_lanes(default_lane: str | None = None) -> list[str]:
 
 def probe_cluster_resources() -> dict[str, Any]:
     """
-    Read the latest resource snapshot.
+    Read the latest resource snapshot immediately before scheduling.
 
-    Live cluster adapters can populate CRYOAGENT_RESOURCE_SNAPSHOT_JSON before
-    execution. Without a snapshot, scheduler falls back to a conservative plan
-    and records that probing was unavailable.
+    CRYOAGENT_RESOURCE_SNAPSHOT_JSON is an explicit test/operator override.
+    Normal live execution probes Slurm each time a job is about to be enqueued.
     """
     raw = os.getenv("CRYOAGENT_RESOURCE_SNAPSHOT_JSON")
     if raw:
@@ -133,13 +133,162 @@ def probe_cluster_resources() -> dict[str, Any]:
                 "cpu": {},
                 "queue": {},
             }
+    slurm_snapshot = probe_slurm_resources()
+    if slurm_snapshot.get("probe_error") is None:
+        return slurm_snapshot
     return {
         "probe_source": "unavailable",
         "captured_at": time(),
+        "probe_error": slurm_snapshot.get("probe_error"),
         "gpu_lanes": [],
         "cpu": {},
         "queue": {},
     }
+
+
+def probe_slurm_resources() -> dict[str, Any]:
+    """Probe Slurm nodes and queue with read-only commands."""
+    try:
+        sinfo = run_probe_command([
+            "sinfo",
+            "-N",
+            "-h",
+            "-o",
+            "%P|%N|%t|%G|%c|%m",
+        ])
+        squeue = run_probe_command([
+            "squeue",
+            "-h",
+            "-o",
+            "%i|%P|%j|%T|%M|%D|%R",
+        ])
+    except Exception as exc:
+        return {
+            "probe_source": "slurm",
+            "captured_at": time(),
+            "probe_error": str(exc),
+            "gpu_lanes": [],
+            "cpu": {},
+            "queue": {},
+        }
+
+    gpu_lanes, cpu_summary = parse_sinfo_output(sinfo)
+    return {
+        "probe_source": "slurm",
+        "captured_at": time(),
+        "gpu_lanes": gpu_lanes,
+        "cpu": cpu_summary,
+        "queue": parse_squeue_output(squeue),
+        "raw": {
+            "sinfo": sinfo,
+            "squeue": squeue,
+        },
+    }
+
+
+def run_probe_command(command: list[str]) -> str:
+    """Run a read-only Slurm probe command."""
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.stdout
+
+
+def parse_sinfo_output(output: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Parse compact sinfo output into scheduler lanes."""
+    lanes: list[dict[str, Any]] = []
+    free_cpu_total = 0
+    cpu_nodes = []
+    for line in output.splitlines():
+        parts = line.split("|")
+        if len(parts) != 6:
+            continue
+        partition, node, state, gres, cpus, memory = parts
+        partition = partition.rstrip("*")
+        cpu_count = safe_int(cpus)
+        if "gpu:" not in gres:
+            if state.lower() in {"idle", "mix", "mixed"}:
+                free_cpu_total += cpu_count
+            cpu_nodes.append({
+                "partition": partition,
+                "node": node,
+                "state": state,
+                "cpus": cpu_count,
+                "memory_mb": safe_int(memory),
+            })
+            continue
+        gpu_type, total_gpus = parse_gres_gpu(gres)
+        allocated_gpus = 0 if state.lower() == "idle" else total_gpus
+        free_gpus = max(total_gpus - allocated_gpus, 0)
+        lanes.append({
+            "partition": slurm_partition_to_cryo_lane(partition, gpu_type),
+            "slurm_partition": partition,
+            "node": node,
+            "gpu_type": gpu_type,
+            "total_gpus": total_gpus,
+            "free_gpus": free_gpus,
+            "allocated_gpus": allocated_gpus,
+            "free_cpus": cpu_count if state.lower() in {"idle", "mix", "mixed"} else 0,
+            "node_state": state,
+            "queue_state": "ready" if free_gpus > 0 else "pending",
+        })
+    return lanes, {"free_cpus": free_cpu_total, "nodes": cpu_nodes}
+
+
+def parse_squeue_output(output: str) -> dict[str, Any]:
+    jobs = []
+    state_counts: dict[str, int] = {}
+    partition_counts: dict[str, int] = {}
+    for line in output.splitlines():
+        parts = line.split("|")
+        if len(parts) != 7:
+            continue
+        job_id, partition, name, state, elapsed, nodes, reason = parts
+        state_counts[state] = state_counts.get(state, 0) + 1
+        partition_counts[partition] = partition_counts.get(partition, 0) + 1
+        jobs.append({
+            "job_id": job_id,
+            "partition": partition,
+            "name": name,
+            "state": state,
+            "elapsed": elapsed,
+            "nodes": safe_int(nodes),
+            "reason": reason,
+        })
+    return {
+        "jobs": jobs,
+        "state_counts": state_counts,
+        "partition_counts": partition_counts,
+    }
+
+
+def parse_gres_gpu(gres: str) -> tuple[str, int]:
+    first = gres.split(",", 1)[0]
+    parts = first.split(":")
+    if len(parts) < 3:
+        return "unknown", 0
+    gpu_type = parts[1]
+    count_text = parts[2].split("(", 1)[0]
+    return gpu_type, safe_int(count_text)
+
+
+def slurm_partition_to_cryo_lane(partition: str, gpu_type: str | None) -> str:
+    if partition == "g8m192":
+        return "g8m192_4090_slurm"
+    if partition == "g8m768" or (gpu_type and "h20" in gpu_type.lower()):
+        return "h20_slurm"
+    return partition
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return 0
 
 
 def build_scheduling_plan(

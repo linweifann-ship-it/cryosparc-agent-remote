@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from copy import deepcopy
+from unittest.mock import patch
 
 from job_specs import get_job_spec
 from resource_scheduler import (
@@ -10,6 +11,9 @@ from resource_scheduler import (
     choose_replacement,
     load_logical_job_record,
     make_logical_job_record,
+    parse_sinfo_output,
+    parse_squeue_output,
+    probe_cluster_resources,
     reconcile_race_jobs,
     register_submission,
     save_logical_job_record,
@@ -182,6 +186,57 @@ class ResourceSchedulerTests(unittest.TestCase):
         self.assertEqual(effective_params["box_size_pix"], 440)
         self.assertNotEqual(effective_params["compute_num_gpus"], original["resolved_parameters"]["compute_num_gpus"])
         self.assertEqual(record.scientific_fingerprint, scientific_fingerprint(original))
+
+    def test_slurm_probe_parses_gpu_cpu_and_queue_state(self):
+        sinfo = "\n".join([
+            "g8m192|4090a|mix|gpu:nvidia_geforce_rtx_4090_d:8(S:0-1)|96|1031672",
+            "g8m768|H20a|idle|gpu:nvidia_h20:8(S:0-1)|224|2063814",
+            "c512m1536*|cpu1|idle|(null)|512|1547616",
+        ])
+        squeue = "\n".join([
+            "1305333|g8m192|cryosparc_P2_J211|PENDING|0:00|1|(Resources)",
+            "1308703|g8m768|cryosparc_P2_J214|RUNNING|0:01|1|H20a",
+        ])
+
+        lanes, cpu = parse_sinfo_output(sinfo)
+        queue = parse_squeue_output(squeue)
+
+        self.assertEqual(lanes[0]["partition"], "g8m192_4090_slurm")
+        self.assertEqual(lanes[1]["partition"], "h20_slurm")
+        self.assertEqual(lanes[1]["free_gpus"], 8)
+        self.assertEqual(cpu["free_cpus"], 512)
+        self.assertEqual(queue["state_counts"]["PENDING"], 1)
+        self.assertEqual(queue["partition_counts"]["g8m768"], 1)
+
+    def test_cluster_probe_uses_slurm_when_no_json_override(self):
+        outputs = {
+            ("sinfo", "-N", "-h", "-o", "%P|%N|%t|%G|%c|%m"):
+                "g8m768|H20a|idle|gpu:nvidia_h20:8(S:0-1)|224|2063814\n",
+            ("squeue", "-h", "-o", "%i|%P|%j|%T|%M|%D|%R"): "",
+        }
+
+        def fake_run(command):
+            return outputs[tuple(command)]
+
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "resource_scheduler.run_probe_command",
+            side_effect=fake_run,
+        ):
+            result = probe_cluster_resources()
+
+        self.assertEqual(result["probe_source"], "slurm")
+        self.assertEqual(result["gpu_lanes"][0]["partition"], "h20_slurm")
+
+    def test_json_snapshot_remains_explicit_override(self):
+        with patch.dict(
+            "os.environ",
+            {"CRYOAGENT_RESOURCE_SNAPSHOT_JSON": '{"gpu_lanes":[]}'},
+            clear=True,
+        ), patch("resource_scheduler.run_probe_command") as probe:
+            result = probe_cluster_resources()
+
+        probe.assert_not_called()
+        self.assertEqual(result["probe_source"], "CRYOAGENT_RESOURCE_SNAPSHOT_JSON")
 
 
 if __name__ == "__main__":

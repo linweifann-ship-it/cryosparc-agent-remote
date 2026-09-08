@@ -17,6 +17,14 @@ from cryosparc_agent_remote.openai_agents_runner import (
 
 class OpenAIAgentsRunnerTests(unittest.TestCase):
     def test_step_input_keeps_dynamic_values_out_of_static_instructions(self):
+        dataset_info = {
+            "input_type": "micrographs",
+            "pixel_size_A": 0.6575,
+            "accelerating_voltage_kv": 300,
+            "spherical_aberration_mm": 2.7,
+            "total_exposure_dose_e_per_A2": 53,
+            "blob_paths": "/home/share/empiar/10025/data/14sep05c_averaged_196/*.mrc",
+        }
         config = AgentsRunConfig(
             project_uid="P2",
             workspace_uid="W1",
@@ -26,7 +34,7 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             api_key="sk-test",
             run_id="abc",
             output_dir=Path("runs/abc"),
-            dataset_info={"empiar_id": "10025"},
+            dataset_info=dataset_info,
             known_workflow_dirs=[],
             max_steps=1,
             max_turns_per_step=3,
@@ -47,7 +55,12 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
         payload = json.loads(messages[2]["content"])
         self.assertEqual(payload["run_scope"]["project_uid"], "P2")
         self.assertEqual(payload["run_scope"]["current_node_id"], "J7")
+        self.assertEqual(payload["mcp_arguments"]["dataset_info"], dataset_info)
         self.assertNotIn("output_contract", payload)
+        prompt_text = json.dumps(messages, ensure_ascii=False)
+        self.assertNotIn("first step", prompt_text.lower())
+        self.assertNotIn("should import", prompt_text.lower())
+        self.assertNotIn("应该", prompt_text)
 
     def test_extract_created_jobs_deduplicates_nested_job_packages(self):
         event = {
@@ -118,6 +131,35 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             config = config_from_args(args)
             self.assertEqual(config.run_id, "run-x")
             self.assertFalse(config.use_responses_api)
+
+    def test_config_accepts_large_max_steps_as_loop_guard(self):
+        args = SimpleNamespace(
+            project="P2",
+            workspace="W16",
+            start_node=None,
+            model="openai/gpt-5.6-sol",
+            api_base="https://api.ofox.io/v1",
+            api_key="sk-test",
+            run_id="p2w16-openaisdk-resource-scheduler-20260908",
+            output_dir="runs",
+            dataset_json='{"input_type":"micrographs"}',
+            dataset_json_file=None,
+            known_workflow_dir=[],
+            max_steps=50,
+            max_turns_per_step=12,
+            wait_timeout_seconds=43200,
+            poll_interval_seconds=60,
+            server_python="/ssd1/linweifan/miniforge3/envs/cryoagent-model/bin/python",
+            project_dir="/ssd1/linweifan/cryosparc-agent-openaisdk-adf6391-resource-scheduler",
+            mcp_server="cryosparc_mcp_server.py",
+            mcp_stdio_command=None,
+            force_chat_completions=False,
+        )
+
+        config = config_from_args(args)
+
+        self.assertEqual(config.max_steps, 50)
+        self.assertEqual(config.workspace_uid, "W16")
 
 
 if __name__ == "__main__":
