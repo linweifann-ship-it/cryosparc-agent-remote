@@ -89,14 +89,15 @@ def build_initial_import_candidates(
 ) -> list[dict[str, Any]]:
     """Build import candidates from explicit dataset file facts at startup."""
     files = dataset_info.get("available_input_files") or {}
+    facts = normalize_dataset_facts(dataset_info)
     candidates = []
     sources = [
-        ("micrograph_blob_paths", "import_micrographs", "micrograph_blob_paths"),
-        ("movie_blob_paths", "import_movies", "movie_blob_paths"),
+        ("micrograph_blob_paths", "import_micrographs", "blob_paths"),
+        ("movie_blob_paths", "import_movies", "blob_paths"),
         ("volume_blob_path", "import_volumes", "volume_blob_path"),
     ]
     for file_key, job_type, parameter_name in sources:
-        value = files.get(file_key)
+        value = files.get(file_key) or facts.get(file_key)
         if not value:
             continue
         if isinstance(value, list):
@@ -104,8 +105,8 @@ def build_initial_import_candidates(
         template = get_parameter_template(job_type)
         defaults = {parameter_name if parameter_name in template else "blob_paths": value}
         for name in ("psize_A", "accel_kv", "cs_mm", "total_dose_e_per_A2"):
-            if dataset_info.get(name) is not None and name in template:
-                defaults[name] = dataset_info[name]
+            if facts.get(name) is not None and name in template:
+                defaults[name] = facts[name]
         candidates.append({
             "action_id": f"initial_{job_type}",
             "action_type": "forward",
@@ -125,6 +126,34 @@ def build_initial_import_candidates(
             "workflow_policy_recommendation": "preferred_next_stage",
         })
     return candidates
+
+
+def normalize_dataset_facts(dataset_info: dict[str, Any]) -> dict[str, Any]:
+    """Map model-facing dataset facts to CryoSPARC import parameter names."""
+    facts = {
+        "psize_A": dataset_info.get("psize_A", dataset_info.get("pixel_size_A")),
+        "accel_kv": dataset_info.get(
+            "accel_kv",
+            dataset_info.get("accelerating_voltage_kv"),
+        ),
+        "cs_mm": dataset_info.get(
+            "cs_mm",
+            dataset_info.get("spherical_aberration_mm"),
+        ),
+        "total_dose_e_per_A2": dataset_info.get(
+            "total_dose_e_per_A2",
+            dataset_info.get("total_exposure_dose_e_per_A2"),
+        ),
+    }
+    blob_paths = dataset_info.get("blob_paths")
+    input_type = dataset_info.get("input_type")
+    if blob_paths and input_type == "micrographs":
+        facts["micrograph_blob_paths"] = blob_paths
+    elif blob_paths and input_type == "movies":
+        facts["movie_blob_paths"] = blob_paths
+    elif blob_paths:
+        facts["micrograph_blob_paths"] = blob_paths
+    return facts
 
 
 def generate_candidate_actions(

@@ -183,6 +183,32 @@ class ModelInputBuilderTests(unittest.TestCase):
         self.assertFalse(result["ready_for_model"])
         self.assertNotIn("current_state", result)
 
+    def test_not_started_payload_preserves_blob_paths_fact(self):
+        empty_state = workflow_state("completed")
+        empty_state["nodes"] = []
+        empty_state["workflow_status"] = "not_started"
+        dataset_info = {
+            "input_type": "micrographs",
+            "pixel_size_A": 0.6575,
+            "accelerating_voltage_kv": 300,
+            "spherical_aberration_mm": 2.7,
+            "total_exposure_dose_e_per_A2": 53,
+            "blob_paths": "/home/share/empiar/10025/data/14sep05c_averaged_196/*.mrc",
+        }
+
+        with patch(
+            "model_input_builder.extract_workflow_state",
+            return_value=empty_state,
+        ):
+            result = build_model_input_payload(
+                "P2",
+                "W16",
+                dataset_info=dataset_info,
+            )
+
+        self.assertEqual(result["current_state"]["last_node_status"], "not_started")
+        self.assertEqual(result["dataset_info"]["blob_paths"], dataset_info["blob_paths"])
+
     def test_known_workflow_retriever_returns_normalized_steps(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "EMPIAR-12099_workflow.json"
