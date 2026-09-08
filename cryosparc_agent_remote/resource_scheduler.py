@@ -157,7 +157,7 @@ def build_scheduling_plan(
     selected_lane = selected.get("partition") if selected else requested_lane or first_or_none(policy.preferred_lanes)
     queue = {
         "lane": selected_lane,
-        "hostname": selected.get("node") if selected else None,
+        "hostname": None,
         "gpus": [],
         "cluster_vars": {},
         "will_queue": not spec.get("interactive", False),
@@ -166,7 +166,7 @@ def build_scheduling_plan(
     resource_config = {
         "mode": "gpu" if spec.get("requires_gpu") else "cpu_or_interactive",
         "lane": queue["lane"],
-        "hostname": queue["hostname"],
+        "hostname": selected.get("node") if selected else queue["hostname"],
         "compute_num_gpus": requested_gpus if spec.get("requires_gpu") else None,
     }
     if not spec.get("requires_gpu"):

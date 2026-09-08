@@ -79,6 +79,8 @@ class ResourceSchedulerTests(unittest.TestCase):
 
         self.assertEqual(plan["selected_lane"], "h20_slurm")
         self.assertEqual(plan["selected_resource"]["gpu_type"], "H20")
+        self.assertIsNone(plan["queue"]["hostname"])
+        self.assertEqual(plan["resource_config"]["hostname"], "h20-a")
 
     def test_waiting_four_gpu_job_downscales_to_two_gpu_replacement(self):
         record = LogicalJobRecord("logical-a", "source", "science")
