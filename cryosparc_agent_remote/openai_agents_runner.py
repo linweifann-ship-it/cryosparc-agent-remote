@@ -105,6 +105,7 @@ class AgentsRunConfig:
     mcp_server: str
     mcp_stdio_command: list[str] | None
     use_responses_api: bool
+    prompt_cache_options_enabled: bool
 
 
 def build_step_input(
@@ -188,7 +189,11 @@ async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
             include_usage=True,
             # The SDK maps this field to the provider's native cache options.
             # Keep the provider-specific cache key in extra_body.
-            prompt_cache_options={"mode": "explicit", "ttl": "30m"},
+            prompt_cache_options=(
+                {"mode": "explicit", "ttl": "30m"}
+                if config.prompt_cache_options_enabled
+                else None
+            ),
             preserve_raw_usage=True,
             extra_body={
                 "prompt_cache_key": f"cryoagent:{config.project_uid}:{config.workspace_uid}:agents-sdk-v1",
@@ -557,6 +562,7 @@ def parse_common_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--force-chat-completions", action="store_true")
+    parser.add_argument("--disable-prompt-cache-options", action="store_true")
     parser.add_argument("--api-smoke-only", action="store_true")
     return parser.parse_args(argv)
 
@@ -590,6 +596,7 @@ def config_from_args(args: argparse.Namespace, output_dir: Path | None = None) -
             else None
         ),
         use_responses_api=not args.force_chat_completions,
+        prompt_cache_options_enabled=not args.disable_prompt_cache_options,
     )
 
 

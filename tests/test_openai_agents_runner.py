@@ -45,6 +45,7 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             mcp_server="cryosparc_mcp_server.py",
             mcp_stdio_command=None,
             use_responses_api=False,
+            prompt_cache_options_enabled=True,
         )
         messages = build_step_input(config, "J7", 2)
         self.assertEqual([message["role"] for message in messages], ["system", "system", "user"])
@@ -127,10 +128,12 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
                 project_dir="/repo",
                 mcp_server="cryosparc_mcp_server.py",
                 force_chat_completions=True,
+                disable_prompt_cache_options=False,
             )
             config = config_from_args(args)
             self.assertEqual(config.run_id, "run-x")
             self.assertFalse(config.use_responses_api)
+            self.assertTrue(config.prompt_cache_options_enabled)
 
     def test_config_accepts_large_max_steps_as_loop_guard(self):
         args = SimpleNamespace(
@@ -154,12 +157,14 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             mcp_server="cryosparc_mcp_server.py",
             mcp_stdio_command=None,
             force_chat_completions=False,
+            disable_prompt_cache_options=True,
         )
 
         config = config_from_args(args)
 
         self.assertEqual(config.max_steps, 50)
         self.assertEqual(config.workspace_uid, "W16")
+        self.assertFalse(config.prompt_cache_options_enabled)
 
 
 if __name__ == "__main__":
