@@ -1,5 +1,6 @@
 """Evidence-based quality assessment and conservative recovery advice."""
 from typing import Any, Dict, List
+import math
 
 QUALITY_POLICY_VERSION = "cryoem_quality_v1"
 
@@ -84,13 +85,30 @@ def find_resolution_evidence(
     for output in (node.get("outputs") or {}).values():
         keys.update(output.get("summary_keys") or [])
         keys.update(output.get("latest_summary_stat_keys") or [])
-    matches = sorted(key for key in keys if any(token in key.lower() for token in ("fsc", "resolution", "res_")))
-    values = {key: item["value"] for key, item in (observed_metrics or {}).items() if key in matches}
+    matches = sorted(
+        key for key in keys
+        if any(token in key.lower() for token in ("fsc", "resolution", "res_"))
+        and "psize" not in key.lower()
+        and "shape" not in key.lower()
+    )
+    values = {}
+    for key, item in (observed_metrics or {}).items():
+        if key not in matches:
+            continue
+        value = item.get("value")
+        if isinstance(value, (int, float)) and math.isfinite(float(value)) and float(value) > 0:
+            values[key] = float(value)
+        elif isinstance(value, dict) and key.lower() in {"fsc_info", "fsc_info_best"}:
+            for nested_key, nested_value in value.items():
+                if not str(nested_key).endswith("_A"):
+                    continue
+                if isinstance(nested_value, (int, float)) and math.isfinite(float(nested_value)) and float(nested_value) > 0:
+                    values[f"{key}.{nested_key}"] = float(nested_value)
     return {
         "available": bool(values),
         "keys": matches,
         "values": values,
-        "note": "Values are copied from CryoSPARC summaries; absent values remain unavailable.",
+        "note": "Only explicit FSC/resolution values are reported; pixel size and volume shape are excluded.",
     }
 
 

@@ -5,7 +5,7 @@ source of truth for technical input compatibility.
 """
 from typing import Any, Dict, Iterable, List
 
-POLICY_VERSION = "cryoem_standard_v1"
+POLICY_VERSION = "cryoem_standard_v2"
 
 STAGE_ORDER = [
     "not_started",
@@ -134,6 +134,108 @@ def annotate_candidates(
         enriched["workflow_policy_recommendation"] = recommendation
         annotated.append(enriched)
     return annotated
+
+
+
+def build_decision_guidance(
+    dataset_info: Dict[str, Any] | None,
+    quality_assessment: Dict[str, Any] | None,
+    current_node: Dict[str, Any] | None,
+    candidates: Iterable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build advisory and enforceable guidance from explicit user goals."""
+    dataset_info = dataset_info or {}
+    quality_assessment = quality_assessment or {}
+    candidate_list = list(candidates)
+    target = dataset_info.get("target_resolution_A")
+    if target is None:
+        target = dataset_info.get("resolution")
+    try:
+        target = float(target) if target is not None else None
+    except (TypeError, ValueError):
+        target = None
+
+    observed = quality_assessment.get("resolution_evidence", {}).get("values", {})
+    observed_values = []
+    for value in observed.values():
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            observed_values.append(number)
+    current = min(observed_values) if observed_values else None
+    refinement_available = any(
+        item.get("available")
+        and item.get("job_type") in {"homo_refine_new", "nonuniform_refine_new", "refine_3D_new"}
+        for item in candidate_list
+    )
+    target_unmet = (
+        target is not None and current is not None and current > target
+    )
+    inspect_available = any(
+        item.get("available") and item.get("job_type") == "inspect_picks_v2"
+        for item in candidate_list
+    )
+    last_action = (current_node or {}).get("job_type")
+    inspect_guidance = None
+    if inspect_available and last_action in {"blob_picker_gpu", "auto_blob_picker_gpu"}:
+        inspect_guidance = {
+            "priority": "mandatory",
+            "reason": (
+                "Inspect Blob Picker locations before extraction so false positives, "
+                "missed particles, and diameter/score issues can be reviewed."
+            ),
+            "model_instruction": (
+                "MUST choose inspect_picks_v2 before any extraction or downstream action; "
+                "skipping Inspect Picks is not allowed in this run."
+            ),
+        }
+    box_sweep_guidance = None
+    if last_action == "extract_micrographs_multi" and any(
+        item.get("available") and item.get("box_size_trial")
+        for item in candidate_list
+    ):
+        sizes = [
+            item.get("default_parameters", {}).get("box_size_pix")
+            for item in candidate_list
+            if item.get("box_size_trial")
+        ]
+        box_sweep_guidance = {
+            "priority": "mandatory",
+            "box_sizes_pix": sizes,
+            "model_instruction": (
+                "MUST submit all available box-size trial actions in one forward decision; "
+                "do not proceed to Class 2D until every trial has completed."
+            ),
+        }
+    reextract_guidance = None
+    if last_action == "class_2D_new" and any(
+        item.get("available") and item.get("job_type") == "extract_micrographs_multi"
+        for item in candidate_list
+    ):
+        reextract_guidance = {
+            "priority": "conditional_fallback",
+            "reason": "2D class images can reveal clipping caused by an undersized extraction box.",
+            "model_instruction": (
+                "If visual 2D evidence shows particles are clipped or truncated, choose "
+                "extract_micrographs_multi fallback and increase box_size_pix before rerunning 2D classification."
+            ),
+        }
+    return {
+        "target_resolution_A": target,
+        "current_resolution_A": current,
+        "target_status": (
+            "unmet" if target_unmet else
+            "met" if target is not None and current is not None else
+            "unknown"
+        ),
+        "must_continue_for_target": bool(target_unmet and refinement_available),
+        "refinement_available": refinement_available,
+        "inspect_picks": inspect_guidance,
+        "extract_fallback": reextract_guidance,
+        "box_size_sweep": box_sweep_guidance,
+    }
 
 
 def job_number(uid: str) -> int:

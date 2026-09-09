@@ -21,6 +21,7 @@ from model_direct_runner import (
     resolve_api_key,
     run_openai_compatible_model,
 )
+from kb_tool_loop import run_kb_tool_call_loop
 
 
 DEFAULT_BASE_MODEL = "/ssd1/lisongyang/models/Qwen3.6-27B-ms-test"
@@ -35,6 +36,64 @@ SYSTEM_PROMPT = (
     "Return exactly one JSON object. Do not include markdown, comments, or "
     "thinking text. Codex and MCP will not repair missing decisions for you."
 )
+
+STATIC_DECISION_INSTRUCTIONS = {
+    "instruction": (
+        "Choose exactly one next action, rollback, request_input, or stop from the current "
+        "CryoSPARC state. Only choose a job type present in candidate_actions_from_mcp. "
+        "If you choose a job, include every required input connection you want MCP to use. "
+        "MCP will return validation or execution errors without repairing your decision. "
+        "Before deciding, you must call at least one read-only kb_* tool to retrieve relevant similar cases, official job documentation, next-step statistics, or failure evidence. "
+        "Use KB evidence as advice only: the live candidate_actions_from_mcp list and current state are authoritative, and never invent a Job ID or input path. "
+        "Decision-type rule: use decision_type=forward whenever you submit one ordinary candidate Job, even if you selected that Job by comparing multiple completed branches. "
+        "In particular, selecting the best Class 2D branch and submitting select_2D is a forward decision, not a branch decision. "
+        "Use decision_type=branch only when the selected candidate action_type is explicitly branch or when submitting multiple independent exploratory actions. "
+        "For Inspect Picks, preserve all high NCC/Power bright-region picks and remove only "
+        "the low-score dark/background tail. Prefer explicit thresholds over auto clustering."
+    ),
+    "output_contract": {
+        "schema_version": "2.0",
+        "decision_type": "forward | branch | rollback | stop | request_input",
+        "action": "CryoSPARC job type for forward/branch decisions.",
+        "job_type": "Same as action when using compact format.",
+        "parameters": "Only non-default parameters explicitly chosen by the model.",
+        "connections": {
+            "input_name": {
+                "source_job_uid": "CryoSPARC source job, chosen by the model",
+                "source_output": "CryoSPARC output group, chosen by the model",
+            }
+        },
+        "reason": "Decision reason. Use your own evidence only.",
+        "confidence": "Number from 0.0 to 1.0.",
+        "risk_flags": [],
+        "evidence": [],
+    },
+    "valid_examples": [
+        {
+            "schema_version": "2.0",
+            "decision_type": "stop",
+            "reason": "No safe autonomous action is clear.",
+            "confidence": 0.5,
+            "risk_flags": ["needs_human_review"],
+            "evidence": [],
+        },
+        {
+            "schema_version": "2.0",
+            "decision_type": "forward",
+            "action": "select_2D",
+            "job_type": "select_2D",
+            "parameters": {"selected_templates": "0,3,7"},
+            "connections": {
+                "particles": {"source_job_uid": "J103", "source_output": "particles"},
+                "templates": {"source_job_uid": "J103", "source_output": "class_averages"},
+            },
+            "reason": "Select the best completed Class 2D branch and continue with one ordinary Select 2D Job.",
+            "confidence": 0.9,
+            "risk_flags": [],
+            "evidence": ["Visual comparison identifies the best completed branch."],
+        },
+    ],
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,20 +111,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-model", default="gpt-5.6-luna")
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--api-prompt-cache-mode", choices=["explicit", "implicit", "disabled"], default="explicit")
+    parser.add_argument("--api-prompt-cache-key")
+    parser.add_argument("--api-prompt-cache-ttl", default="30m")
     parser.add_argument("--model-python", default=DEFAULT_MODEL_PYTHON)
     parser.add_argument("--model-srun-prefix")
     parser.add_argument("--server-python", default=DEFAULT_SERVER_PYTHON)
     parser.add_argument("--project-dir", default=DEFAULT_PROJECT_DIR)
     parser.add_argument("--mcp-server", default=DEFAULT_MCP_SERVER)
     parser.add_argument("--max-rounds", type=int, default=8)
+    parser.add_argument("--max-kb-tool-calls", type=int, default=4, help="Maximum read-only KB calls per decision.")
+    parser.add_argument("--kb-tool-policy", choices=["required", "auto", "disabled"], default="required", help="KB policy: require, allow, or strictly disable KB tools.")
     parser.add_argument("--max-validation-failures", type=int, default=3)
-    parser.add_argument("--max-new-tokens", type=int, default=768)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--torch-dtype", default="bfloat16")
     parser.add_argument("--wait-timeout-seconds", type=int, default=43200)
     parser.add_argument("--poll-interval-seconds", type=int, default=60)
+    parser.add_argument("--wait-retries", type=int, default=3, help="Retries for transient result-package failures.")
+    parser.add_argument("--wait-retry-delay-seconds", type=int, default=15)
+    parser.add_argument("--resume-checkpoint", help="Resume from a previously written checkpoint JSON.")
     parser.add_argument("--output-dir", default="reports/autonomous_mcp_closed_loop")
+    parser.add_argument(
+        "--vision",
+        action="store_true",
+        help="Attach class-average contact sheets for Select 2D decisions.",
+    )
+    parser.add_argument("--vision-max-classes", type=int, default=50)
     return parser.parse_args()
 
 
@@ -101,7 +174,15 @@ async def main_async() -> None:
         env=server_env,
     )
 
+    resume_checkpoint = None
+    if args.resume_checkpoint:
+        resume_checkpoint = json.loads(Path(args.resume_checkpoint).read_text())
     current_node = args.current_node
+    if current_node is None and resume_checkpoint:
+        pending_jobs = resume_checkpoint.get("pending_jobs") or []
+        current_node = (pending_jobs[0].get("job_uid") if pending_jobs else None) or resume_checkpoint.get("current_node")
+    summary["resume_checkpoint"] = args.resume_checkpoint
+    summary["checkpoint_file"] = str(run_dir / "checkpoint.json")
     feedback_to_model: dict[str, Any] | None = None
     validation_failures = 0
 
@@ -170,10 +251,79 @@ async def main_async() -> None:
                 round_log["next_round_reason"] = model_input.get("message")
                 break
 
+            visual_context = None
+            if args.vision and args.backend == "api" and current_node:
+                last_action = model_input.get("current_state", {}).get("last_action")
+                candidate_types = {
+                    item.get("job_type")
+                    for item in candidate_context.get("candidate_actions", [])
+                }
+                if last_action == "class_2D_new" and "select_2D" in candidate_types:
+                    comparison_uids = []
+                    for item in candidate_context.get("candidate_actions", []):
+                        if item.get("job_type") != "select_2D":
+                            continue
+                        for job_uid in item.get("class2d_comparison_group") or []:
+                            if job_uid and job_uid not in comparison_uids:
+                                comparison_uids.append(job_uid)
+                    if len(comparison_uids) > 1:
+                        contexts = []
+                        for job_uid in comparison_uids:
+                            contexts.append(await call_tool_json(
+                                session,
+                                "get_class_average_visual_context",
+                                {
+                                    "project_uid": args.project,
+                                    "job_uid": job_uid,
+                                    "max_classes": args.vision_max_classes,
+                                },
+                            ))
+                        visual_context = {
+                            "kind": "class_average_comparison",
+                            "contexts": contexts,
+                        }
+                    else:
+                        visual_context = await call_tool_json(
+                            session,
+                            "get_class_average_visual_context",
+                            {
+                                "project_uid": args.project,
+                                "job_uid": current_node,
+                                "max_classes": args.vision_max_classes,
+                            },
+                        )
+                elif last_action in {"blob_picker_gpu", "auto_blob_picker_gpu"} and "inspect_picks_v2" in candidate_types:
+                    files = model_input.get("dataset_info", {}).get("available_input_files") or {}
+                    micrograph_path = files.get("micrograph_blob_paths")
+                    micrograph_root = None
+                    if isinstance(micrograph_path, str) and micrograph_path:
+                        micrograph_root = str(Path(micrograph_path).expanduser().parent)
+                    visual_context = await call_tool_json(
+                        session,
+                        "get_pick_inspection_visual_context",
+                        {
+                            "project_uid": args.project,
+                            "job_uid": current_node,
+                            "max_micrographs": 8,
+                            "max_picks_per_micrograph": 600,
+                            "micrograph_root": micrograph_root,
+                        },
+                    )
+                if visual_context:
+                    round_log["visual_context"] = {
+                        "kind": visual_context.get("kind"),
+                        "source": visual_context.get("source"),
+                        "image_count": visual_context.get("image_count"),
+                        "class_ids": visual_context.get("class_ids"),
+                        "local_path": (visual_context.get("contact_sheet") or {}).get("local_path"),
+                    }
             messages = build_autonomous_prompt(
                 model_input=model_input,
                 candidate_context=candidate_context,
                 round_index=round_index,
+                visual_context=visual_context,
+                mark_static_cache_breakpoint=args.backend == "api" and args.api_prompt_cache_mode == "explicit",
+                kb_tool_policy=args.kb_tool_policy,
             )
             messages_file = round_dir / "model_messages.json"
             write_json(messages_file, messages, round_log)
@@ -181,16 +331,52 @@ async def main_async() -> None:
             generation_file = round_dir / "model_generation.json"
             try:
                 if args.backend == "api":
-                    model_call = await asyncio.to_thread(
-                        run_openai_compatible_model,
-                        messages,
-                        args.api_base,
-                        resolve_api_key(args.api_key, args.api_key_env),
-                        args.api_model,
-                        args.max_new_tokens,
-                        args.temperature,
-                        300,
-                    )
+                    api_key = resolve_api_key(args.api_key, args.api_key_env)
+
+                    api_call_count = 0
+
+                    async def api_model_call(working_messages, tools):
+                        nonlocal api_call_count
+                        tool_choice = (
+                            "none"
+                            if args.kb_tool_policy == "disabled"
+                            else (
+                                "required"
+                                if args.kb_tool_policy == "required" and api_call_count == 0
+                                else "auto"
+                            )
+                        )
+                        api_call_count += 1
+                        return await asyncio.to_thread(
+                            run_openai_compatible_model,
+                            working_messages,
+                            args.api_base,
+                            api_key,
+                            args.api_model,
+                            args.max_new_tokens,
+                            args.temperature,
+                            300,
+                            prompt_cache_key=resolve_prompt_cache_key(args),
+                            prompt_cache_options=build_prompt_cache_options(args),
+                            tools=tools,
+                            tool_choice=tool_choice,
+                        )
+
+                    async def kb_executor(tool_name, arguments):
+                        return await call_tool_json(session, tool_name, arguments)
+
+                    if args.kb_tool_policy == "disabled":
+                        # The ablation must not expose KB tools or perform KB calls.
+                        model_call = await api_model_call(messages, [])
+                        model_call["tool_trace"] = []
+                        model_call["messages_after_tools"] = messages
+                    else:
+                        model_call = await run_kb_tool_call_loop(
+                            messages,
+                            api_model_call,
+                            kb_executor,
+                            max_tool_calls=args.max_kb_tool_calls,
+                        )
                     model_call["request_id"] = f"round_{round_index:02d}"
                 else:
                     assert model_worker is not None
@@ -217,6 +403,8 @@ async def main_async() -> None:
                 print_run_summary(summary, run_dir)
                 return
             round_log["model_call"] = model_call
+            round_log["kb_tool_calls"] = model_call.get("tool_trace", [])
+            write_json(round_dir / "kb_tool_calls.json", model_call.get("tool_trace", []), round_log)
             round_log["raw_model_output_file"] = str(generation_file)
             write_json(generation_file, model_call, round_log)
             generation = model_call
@@ -259,6 +447,7 @@ async def main_async() -> None:
                 "project_uid": args.project,
                 "workspace_uid": args.workspace,
                 "current_node_id": current_node,
+                "dataset_info": dataset_info,
             }
             validation = await call_tool_json(
                 session,
@@ -299,6 +488,7 @@ async def main_async() -> None:
                 "project_uid": args.project,
                 "workspace_uid": args.workspace,
                 "current_node_id": current_node,
+                "dataset_info": dataset_info,
                 "dry_run": False,
             }
             execution = await call_tool_json(
@@ -315,6 +505,21 @@ async def main_async() -> None:
 
             created_jobs = find_created_jobs(execution)
             round_log["created_jobs"] = created_jobs
+            write_json(
+                run_dir / "checkpoint.json",
+                {
+                    "schema_version": "1.0",
+                    "status": "waiting_for_jobs" if created_jobs else "execution_failed",
+                    "updated_at": utc_now(),
+                    "project_uid": args.project,
+                    "workspace_uid": args.workspace,
+                    "round": round_index,
+                    "current_node": current_node,
+                    "pending_jobs": created_jobs,
+                    "next_round": round_index + 1,
+                },
+                None,
+            )
             if not created_jobs:
                 feedback_to_model = make_feedback(
                     round_index,
@@ -337,10 +542,11 @@ async def main_async() -> None:
                     "poll_interval_seconds": args.poll_interval_seconds,
                     "include_next_candidates": True,
                 }
-                job_result = await call_tool_json(
+                job_result = await wait_for_job_result_with_retries(
                     session,
-                    "wait_for_job_result_package",
                     wait_args,
+                    retries=args.wait_retries,
+                    retry_delay_seconds=args.wait_retry_delay_seconds,
                 )
                 job_result["local_job_logs"] = collect_job_logs(job["job_uid"])
                 job_feedbacks.append(
@@ -372,6 +578,21 @@ async def main_async() -> None:
 
             last_job = terminal_jobs[-1]
             current_node = last_job.get("job_uid") or current_node
+            write_json(
+                run_dir / "checkpoint.json",
+                {
+                    "schema_version": "1.0",
+                    "status": "ready_for_next_decision",
+                    "updated_at": utc_now(),
+                    "project_uid": args.project,
+                    "workspace_uid": args.workspace,
+                    "round": round_index,
+                    "current_node": current_node,
+                    "pending_jobs": [],
+                    "next_round": round_index + 1,
+                },
+                None,
+            )
             feedback_to_model = make_feedback(
                 round_index,
                 "job_result",
@@ -403,69 +624,105 @@ def build_autonomous_prompt(
     model_input: dict[str, Any],
     candidate_context: dict[str, Any],
     round_index: int,
-) -> list[dict[str, str]]:
-    output_contract = {
-        "schema_version": "2.0",
-        "decision_type": "forward | branch | rollback | stop | request_input",
-        "action": "CryoSPARC job type for forward/branch decisions.",
-        "job_type": "Same as action when using compact format.",
-        "parameters": "Only non-default parameters explicitly chosen by the model.",
-        "connections": {
-            "input_name": {
-                "source_job_uid": "CryoSPARC source job, chosen by the model",
-                "source_output": "CryoSPARC output group, chosen by the model",
-            }
-        },
-        "reason": "Decision reason. Use your own evidence only.",
-        "confidence": "Number from 0.0 to 1.0.",
-        "risk_flags": [],
-        "evidence": [],
-    }
-    payload = {
+    visual_context: dict[str, Any] | None = None,
+    mark_static_cache_breakpoint: bool = False,
+    kb_tool_policy: str = "required",
+) -> list[dict[str, Any]]:
+    """Keep stable decision instructions separate from per-round workflow state."""
+    dynamic_payload = {
         "round": round_index,
-        "instruction": (
-            "Choose exactly one next action, rollback, request_input, or stop from the current "
-            "CryoSPARC state. Only choose a job type present in candidate_actions_from_mcp. "
-            "If you choose a job, include every required input connection you "
-            "want MCP to use. MCP will return validation or execution errors "
-            "without repairing your decision."
-        ),
         "model_input": model_input,
         "candidate_actions_from_mcp": candidate_context,
+        "decision_guidance": candidate_context.get("workflow_guidance") or {},
         "failure_context": model_input.get("failure_context"),
-        "output_contract": output_contract,
-        "valid_examples": [
-            {
-                "schema_version": "2.0",
-                "decision_type": "forward",
-                "action": "patch_ctf_estimation_multi",
-                "job_type": "patch_ctf_estimation_multi",
-                "parameters": {"compute_num_gpus": 1},
-                "connections": {
-                    "exposures": {
-                        "source_job_uid": "J123",
-                        "source_output": "imported_micrographs",
-                    }
-                },
-                "reason": "The current completed job provides micrographs.",
-                "confidence": 0.8,
-                "risk_flags": [],
-                "evidence": ["Current output imported_micrographs is available."],
-            },
-            {
-                "schema_version": "2.0",
-                "decision_type": "stop",
-                "reason": "No safe autonomous action is clear.",
-                "confidence": 0.5,
-                "risk_flags": ["needs_human_review"],
-                "evidence": [],
-            },
-        ],
     }
-    return [
+    static_instructions = dict(STATIC_DECISION_INSTRUCTIONS)
+    if kb_tool_policy == "disabled":
+        static_instructions["instruction"] = static_instructions["instruction"].replace(
+            "Before deciding, you must call at least one read-only kb_* tool to retrieve relevant similar cases, official job documentation, next-step statistics, or failure evidence. ",
+            "Do not call any kb_* tools in this ablation; decide only from the current state, candidate actions, and available visual evidence. ",
+        )
+    static_text = json.dumps(
+        static_instructions, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    if mark_static_cache_breakpoint:
+        static_content: Any = [{
+            "type": "text",
+            "text": static_text,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }]
+    else:
+        static_content = static_text
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "system", "content": static_content},
+        {
+            "role": "user",
+            "content": json.dumps(dynamic_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        },
     ]
+    if visual_context:
+        if visual_context.get("kind") == "class_average_comparison":
+            contexts = visual_context.get("contexts") or []
+            content: list[dict[str, Any]] = [{
+                "type": "text",
+                "text": json.dumps({
+                    "visual_instruction": (
+                        "Compare every Class 2D contact sheet below. Each sheet is labelled by job_uid "
+                        "and every tile by class_id. Select the best completed branch based on clear, "
+                        "consistent particle views, intact particle boundaries, noise level, and view diversity."
+                    ),
+                    "comparison_jobs": [
+                        {
+                            "job_uid": item.get("source", {}).get("job_uid"),
+                            "class_statistics": item.get("class_statistics", []),
+                        }
+                        for item in contexts
+                    ],
+                }, ensure_ascii=False),
+            }]
+            for item in contexts:
+                sheet = item.get("contact_sheet") or {}
+                if sheet.get("data_url"):
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": sheet["data_url"]},
+                    })
+        else:
+            content = [
+                {
+                    "type": "text",
+                    "text": json.dumps({
+                        "visual_instruction": (
+                            "Review this class-average contact sheet for Select 2D. Every tile is "
+                            "labelled class_id=<integer>. Select clear, consistent particle views."
+                        ) if visual_context.get("kind") == "class_average" else (
+                            "Review this micrograph contact sheet for Inspect Picks. Red circles mark "
+                            "Blob Picker locations. Preserve high NCC/Power bright-region picks and "
+                            "remove only the low-score dark/background tail. Prefer explicit NCC/Power "
+                            "thresholds; do not use auto clustering unless input_is_denoised is true."
+                        ),
+                        "visual_context": {key: value for key, value in visual_context.items() if key != "contact_sheet"},
+                    }, ensure_ascii=False),
+                },
+                {"type": "image_url", "image_url": {"url": visual_context["contact_sheet"]["data_url"]}},
+            ]
+        messages.append({"role": "user", "content": content})
+    return messages
+
+
+def resolve_prompt_cache_key(args: argparse.Namespace) -> str | None:
+    if args.api_prompt_cache_mode != "explicit":
+        return None
+    if args.api_prompt_cache_key:
+        return args.api_prompt_cache_key
+    return f"cryoagent:{args.project}:{args.workspace}:workflow-v2"
+
+
+def build_prompt_cache_options(args: argparse.Namespace) -> dict[str, Any] | None:
+    if args.api_prompt_cache_mode != "explicit":
+        return None
+    return {"mode": "explicit", "ttl": args.api_prompt_cache_ttl}
 
 
 class ModelWorker:
@@ -566,6 +823,39 @@ class ModelWorker:
                 return json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+
+async def wait_for_job_result_with_retries(
+    session: ClientSession,
+    arguments: dict[str, Any],
+    retries: int,
+    retry_delay_seconds: int,
+) -> dict[str, Any]:
+    """Retry transient MCP/result-package failures without duplicating a Job."""
+    attempts: list[dict[str, Any]] = []
+    for attempt in range(1, max(retries, 0) + 2):
+        try:
+            result = await call_tool_json(session, "wait_for_job_result_package", arguments)
+            if not result.get("mcp_error"):
+                result["wait_attempts"] = attempts + [{"attempt": attempt, "status": "ok"}]
+                return result
+            attempts.append({"attempt": attempt, "status": "mcp_error", "error": result})
+        except Exception as exc:
+            attempts.append({
+                "attempt": attempt,
+                "status": "exception",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            })
+        if attempt <= max(retries, 0):
+            await asyncio.sleep(max(retry_delay_seconds, 1) * attempt)
+    return {
+        "success": False,
+        "ready_for_model": False,
+        "wait_error": "wait_for_job_result_package failed after retries",
+        "wait_attempts": attempts,
+        "job_uid": arguments.get("job_uid"),
+    }
 
 
 async def call_tool_json(

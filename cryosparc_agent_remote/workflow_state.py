@@ -118,17 +118,8 @@ def extract_workflow_state(project_uid: str, workspace_uid: str) -> dict[str, An
         if node["status"] in {"failed", "killed"}
     ]
 
-    snapshot_payload = {
-        "schema_version": WORKFLOW_STATE_SCHEMA_VERSION,
-        "project_uid": project_uid,
-        "workspace_uid": workspace_uid,
-        "nodes": [snapshot_node(node) for node in nodes],
-        "edges": edges,
-    }
-
     return {
         "schema_version": WORKFLOW_STATE_SCHEMA_VERSION,
-        "state_snapshot_id": content_hash("state", snapshot_payload),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "project_uid": project_uid,
         "workspace_uid": workspace_uid,
@@ -312,26 +303,6 @@ def build_edges(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             edge["target_input"],
         ),
     )
-
-
-def snapshot_node(node: dict[str, Any]) -> dict[str, Any]:
-    """Keep stable, decision-relevant fields for stale-decision detection."""
-    return {
-        "workflow_node_id": node["workflow_node_id"],
-        "logical_node_id": node.get("logical_node_id"),
-        "cryosparc_job_uid": node["cryosparc_job_uid"],
-        "job_type": node["job_type"],
-        "status": node["status"],
-        "parent_job_uids": node["parent_job_uids"],
-        "child_job_uids": node["child_job_uids"],
-        "inputs": node["inputs"],
-        "outputs": node["outputs"],
-        "key_parameters": node["key_parameters"],
-        "runtime": node.get("runtime"),
-        "run_errors": node.get("run_errors"),
-        "has_error": node["has_error"],
-        "has_warning": node["has_warning"],
-    }
 
 
 def derive_workflow_status(nodes: list[dict[str, Any]]) -> str:

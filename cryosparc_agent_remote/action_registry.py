@@ -15,9 +15,15 @@ from cryosparc_client import cryosparc_client
 from job_executor import execute_job_action, plan_job_action
 from job_specs import get_parameter_template
 from dynamic_candidates import build_registry_next_actions
-from workflow_policy import annotate_candidates, infer_current_stage, POLICY_VERSION
+from workflow_policy import (
+    annotate_candidates,
+    build_decision_guidance,
+    infer_current_stage,
+    POLICY_VERSION,
+)
 from quality_policy import assess_node, build_retry_candidate
 from workflow_state import content_hash, extract_workflow_state, find_node
+from dataset_info import normalize_dataset_info
 
 
 REGISTRY_VERSION = "workflow_v1"
@@ -29,6 +35,7 @@ def get_candidate_actions(
     dataset_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read the current workflow and return selectable next actions."""
+    dataset_info = normalize_dataset_info(dataset_info or {})
     workflow_state = extract_workflow_state(project_uid, workspace_uid)
     current_node = (
         find_node(workflow_state, current_node_id)
@@ -55,17 +62,19 @@ def get_candidate_actions(
         if current_node
         else {"policy_version": "cryoem_quality_v1", "quality_status": "not_started"}
     )
-    candidate_payload = {
-        "state_snapshot_id": workflow_state["state_snapshot_id"],
-        "registry_version": REGISTRY_VERSION,
-        "current_node_id": canonical_current_node_id,
-        "candidate_actions": candidate_actions,
-    }
+    workflow_policy = infer_current_stage(
+        workflow_state["nodes"],
+        current_node_id=canonical_current_node_id,
+    )
+    workflow_guidance = build_decision_guidance(
+        dataset_info=dataset_info,
+        quality_assessment=quality_assessment,
+        current_node=current_node,
+        candidates=candidate_actions,
+    )
     return {
         "schema_version": "1.0",
         "registry_version": REGISTRY_VERSION,
-        "state_snapshot_id": workflow_state["state_snapshot_id"],
-        "candidate_set_id": content_hash("candidates", candidate_payload),
         "generated_at": workflow_state["generated_at"],
         "project_uid": project_uid,
         "workspace_uid": workspace_uid,
@@ -75,12 +84,10 @@ def get_candidate_actions(
         "candidate_actions": candidate_actions,
         "blocked_actions": blocked_actions,
         "decision_hint": "stop" if not candidate_actions else None,
-        "workflow_policy": infer_current_stage(
-            workflow_state["nodes"],
-            current_node_id=canonical_current_node_id,
-        ),
+        "workflow_policy": workflow_policy,
         "workflow_policy_version": POLICY_VERSION,
         "quality_assessment": quality_assessment,
+        "workflow_guidance": workflow_guidance,
     }
 
 
@@ -88,6 +95,7 @@ def build_initial_import_candidates(
     dataset_info: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Build import candidates from explicit dataset file facts at startup."""
+    dataset_info = normalize_dataset_info(dataset_info)
     files = dataset_info.get("available_input_files") or {}
     candidates = []
     sources = [
@@ -106,6 +114,17 @@ def build_initial_import_candidates(
         for name in ("psize_A", "accel_kv", "cs_mm", "total_dose_e_per_A2"):
             if dataset_info.get(name) is not None and name in template:
                 defaults[name] = dataset_info[name]
+        fact_names = [
+            name for name in ("psize_A", "accel_kv", "cs_mm", "total_dose_e_per_A2")
+            if defaults.get(name) is not None
+        ]
+        fact_note = (
+            " Known dataset facts are supplied as default parameters and must be "
+            "preserved unless explicit evidence supports changing them: "
+            + ", ".join(fact_names) + "."
+            if fact_names
+            else ""
+        )
         candidates.append({
             "action_id": f"initial_{job_type}",
             "action_type": "forward",
@@ -113,7 +132,7 @@ def build_initial_import_candidates(
             "reference_job_uid": None,
             "reference_status": None,
             "job_type": job_type,
-            "description": f"Import dataset input using {job_type}.",
+            "description": f"Import dataset input using {job_type}.{fact_note}",
             "execution_mode": "create_job",
             "available": True,
             "blocked_by": [],
@@ -196,6 +215,30 @@ def generate_candidate_actions(
         candidates = merge_candidates(candidates, registry_actions)
         blocked = merge_candidates(blocked, registry_blocked)
 
+    if current_node.get("job_type") == "class_2D_new":
+        comparison_actions = build_class2d_comparison_candidates(
+            workflow_state,
+            current_node,
+            project_uid=project_uid,
+        )
+        if len(comparison_actions) > 1:
+            candidates = [
+                action for action in candidates
+                if action.get("job_type") != "select_2D"
+            ]
+            group = [
+                action.get("reference_job_uid")
+                or str(action.get("action_id", "")).split("_")[1]
+                for action in comparison_actions
+            ]
+            for action in comparison_actions:
+                action["class2d_comparison_group"] = group
+                action["comparison_instruction"] = (
+                    "This is one of several completed Class 2D box-size trials. "
+                    "Compare all group members using their visual evidence before selecting one."
+                )
+            candidates.extend(comparison_actions)
+
     candidates = [
         apply_auto_select_2d_policy(action, workflow_state)
         for action in candidates
@@ -204,6 +247,10 @@ def generate_candidate_actions(
         apply_auto_select_2d_policy(action, workflow_state)
         for action in blocked
     ]
+    candidates, gated = apply_hard_workflow_gates(
+        candidates, blocked, workflow_state, current_node
+    )
+    blocked.extend(gated)
     policy = infer_current_stage(
         workflow_state["nodes"],
         current_node_id=current_node["workflow_node_id"],
@@ -213,6 +260,234 @@ def generate_candidate_actions(
     candidates.sort(key=lambda action: action["action_id"])
     blocked.sort(key=lambda action: action["action_id"])
     return candidates, blocked
+
+
+def apply_hard_workflow_gates(
+    candidates: list[dict[str, Any]],
+    blocked: list[dict[str, Any]],
+    workflow_state: dict[str, Any],
+    current_node: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Enforce mandatory inspection and finite box-size trial stages."""
+    gated: list[dict[str, Any]] = []
+    job_type = current_node.get("job_type")
+    if job_type in {"blob_picker_gpu", "auto_blob_picker_gpu"}:
+        inspection = [
+            action for action in candidates
+            if action.get("job_type") == "inspect_picks_v2"
+        ]
+        if inspection:
+            for action in candidates:
+                if action not in inspection:
+                    gated.append({
+                        **action,
+                        "available": False,
+                        "blocked_by": list(action.get("blocked_by") or []) + [
+                            "Mandatory Inspect Picks gate: complete inspect_picks_v2 before downstream actions."
+                        ],
+                    })
+            return inspection, gated
+
+    if job_type == "extract_micrographs_multi":
+        trials = build_box_size_trial_candidates(workflow_state, current_node)
+        if trials:
+            for action in candidates:
+                gated.append({
+                    **action,
+                    "available": False,
+                    "blocked_by": list(action.get("blocked_by") or []) + [
+                        "Mandatory box-size sweep: complete all configured extraction trials before Class 2D."
+                    ],
+                })
+            return trials, gated
+        class_trials = build_class_2d_trial_candidates(workflow_state, current_node)
+        if len(class_trials) > 1:
+            for action in candidates:
+                gated.append({
+                    **action,
+                    "available": False,
+                    "blocked_by": list(action.get("blocked_by") or []) + [
+                        "Mandatory Class 2D comparison: run Class 2D for every completed box-size trial first."
+                    ],
+                })
+            return class_trials, gated
+    return candidates, gated
+
+
+def configured_box_size_trials() -> list[int]:
+    """Return the finite extraction sizes used by the mandatory sweep."""
+    raw = os.getenv("CRYOAGENT_BOX_SIZE_TRIALS", "320,384,440")
+    values: list[int] = []
+    for item in raw.split(","):
+        try:
+            value = int(item.strip())
+        except ValueError:
+            continue
+        if value >= 32 and value not in values:
+            values.append(value)
+    return values or [320, 384, 440]
+
+
+def build_box_size_trial_candidates(
+    workflow_state: dict[str, Any],
+    extract_node: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build available branch candidates for missing standard box sizes."""
+    sizes = configured_box_size_trials()
+    existing = set()
+    for node in workflow_state.get("nodes", []):
+        if node.get("job_type") != "extract_micrographs_multi":
+            continue
+        value = (node.get("key_parameters") or {}).get("box_size_pix")
+        try:
+            existing.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    required_inputs = {
+        name: connections
+        for name, connections in (extract_node.get("inputs") or {}).items()
+        if name in {"micrographs", "particles"} and connections
+    }
+    if not required_inputs:
+        return []
+    template = build_parameter_template(extract_node)
+    actions = []
+    for size in sizes:
+        if size in existing:
+            continue
+        defaults = {
+            name: value
+            for name, value in (extract_node.get("key_parameters") or {}).items()
+            if name == "compute_num_gpus"
+        }
+        defaults["box_size_pix"] = size
+        actions.append({
+            "action_id": f"box_trial_{extract_node['cryosparc_job_uid']}_{size}",
+            "action_type": "forward",
+            "workflow_node_id": f"{extract_node['workflow_node_id']}:box_trial_{size}",
+            "reference_job_uid": extract_node["cryosparc_job_uid"],
+            "reference_status": extract_node["status"],
+            "job_type": "extract_micrographs_multi",
+            "description": (
+                f"Mandatory box-size trial extraction with box_size_pix={size}; select all trial actions together."
+            ),
+            "execution_mode": "create_job",
+            "available": True,
+            "blocked_by": [],
+            "required_inputs": required_inputs,
+            "missing_required_inputs": [],
+            "parameter_template": template,
+            "default_parameters": defaults,
+            "box_size_trial": True,
+        })
+    return actions
+
+
+def build_class_2d_trial_candidates(
+    workflow_state: dict[str, Any],
+    current_extract: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build one Class 2D candidate for each completed extraction trial."""
+    current_inputs = current_extract.get("inputs") or {}
+    source_key = tuple(
+        (item.get("source_job_uid"), item.get("source_output"))
+        for item in current_inputs.get("micrographs", [])
+    )
+    if not source_key:
+        return []
+    extracts = []
+    for node in workflow_state.get("nodes", []):
+        if node.get("job_type") != "extract_micrographs_multi" or node.get("status") != "completed":
+            continue
+        inputs = node.get("inputs") or {}
+        key = tuple(
+            (item.get("source_job_uid"), item.get("source_output"))
+            for item in inputs.get("micrographs", [])
+        )
+        if key == source_key and node.get("outputs", {}).get("particles", {}).get("available"):
+            extracts.append(node)
+    if len(extracts) < 2:
+        return []
+    template = get_parameter_template("class_2D_new")
+    actions = []
+    for node in sorted(extracts, key=lambda item: int(str(item["cryosparc_job_uid"])[1:])):
+        particles = node["outputs"]["particles"]
+        box_size = (node.get("key_parameters") or {}).get("box_size_pix")
+        actions.append({
+            "action_id": f"class2d_trial_{node['cryosparc_job_uid']}",
+            "action_type": "forward",
+            "workflow_node_id": f"{node['workflow_node_id']}:class_2d_trial",
+            "reference_job_uid": node["cryosparc_job_uid"],
+            "reference_status": node["status"],
+            "job_type": "class_2D_new",
+            "description": f"Class 2D comparison for extraction box_size_pix={box_size}.",
+            "execution_mode": "create_job",
+            "available": True,
+            "blocked_by": [],
+            "required_inputs": {
+                "particles": [{
+                    "source_workflow_node_id": node["workflow_node_id"],
+                    "source_logical_node_id": node["logical_node_id"],
+                    "source_job_uid": node["cryosparc_job_uid"],
+                    "source_output": "particles",
+                    "result_names": particles.get("result_names") or [],
+                }]
+            },
+            "missing_required_inputs": [],
+            "parameter_template": template,
+            "default_parameters": {},
+            "class_2d_trial": True,
+            "box_size_pix": box_size,
+        })
+    return actions
+
+
+def build_class2d_comparison_candidates(
+    workflow_state: dict[str, Any],
+    current_node: dict[str, Any],
+    project_uid: str | None,
+) -> list[dict[str, Any]]:
+    """Expose Select 2D candidates for every comparable Class 2D branch."""
+    current_particles = (current_node.get("inputs") or {}).get("particles") or []
+    current_extract_uid = current_particles[0].get("source_job_uid") if current_particles else None
+    if not current_extract_uid:
+        return []
+    extract_nodes = {
+        node.get("cryosparc_job_uid"): node
+        for node in workflow_state.get("nodes", [])
+        if node.get("job_type") == "extract_micrographs_multi"
+        and node.get("status") == "completed"
+    }
+    current_extract = extract_nodes.get(current_extract_uid)
+    current_mic_inputs = (current_extract or {}).get("inputs", {}).get("micrographs") or []
+    current_mic_source = current_mic_inputs[0].get("source_job_uid") if current_mic_inputs else None
+    if not current_mic_source:
+        return []
+
+    class_nodes = []
+    for node in workflow_state.get("nodes", []):
+        if node.get("job_type") != "class_2D_new" or node.get("status") != "completed":
+            continue
+        particles = (node.get("inputs") or {}).get("particles") or []
+        extract = extract_nodes.get(particles[0].get("source_job_uid")) if particles else None
+        mic_inputs = (extract or {}).get("inputs", {}).get("micrographs") or []
+        if mic_inputs and mic_inputs[0].get("source_job_uid") == current_mic_source:
+            class_nodes.append(node)
+    if len(class_nodes) <= 1 or project_uid is None:
+        return []
+
+    actions = []
+    for node in sorted(class_nodes, key=lambda item: int(str(item["cryosparc_job_uid"])[1:])):
+        registry_actions, _ = build_registry_next_actions(
+            workflow_state,
+            node,
+            candidate_job_types={"select_2D"},
+        )
+        actions.extend(
+            action for action in registry_actions
+            if action.get("job_type") == "select_2D"
+        )
+    return actions
 
 
 def apply_auto_select_2d_policy(
@@ -232,8 +507,22 @@ def apply_auto_select_2d_policy(
     class_count = class_average_count(action, workflow_state)
     if class_count is None:
         return action
-    keep_count = max(1, min(class_count, int(math.ceil(class_count * fraction))))
-    selected = ",".join(str(index) for index in range(keep_count))
+    quality_plan = build_quality_ranked_class_plan(action, workflow_state, fraction)
+    if quality_plan is None:
+        keep_count = max(1, min(class_count, int(math.ceil(class_count * fraction))))
+        selected = ",".join(str(index) for index in range(keep_count))
+        selection_order = "class_index"
+        quality_ranked = False
+        policy_note = "Fallback to class-index selection because per-class metadata is unavailable."
+    else:
+        keep_count = len(quality_plan["selected_class_indices"])
+        selected = ",".join(str(index) for index in quality_plan["selected_class_indices"])
+        selection_order = "resolution_ascending"
+        quality_ranked = True
+        policy_note = (
+            "Classes ranked by per-class blob/res_A; whole classes are selected "
+            "until the target particle count is reached."
+        )
     enriched = dict(action)
     template = dict(enriched.get("parameter_template") or {})
     template["selected_templates"] = {"type": "string", "default": selected}
@@ -245,22 +534,81 @@ def apply_auto_select_2d_policy(
     enriched["approval_required"] = False
     enriched["approval_reasons"] = []
     enriched["auto_policy"] = {
-        "name": "select_2d_class_fraction",
+        "name": "select_2d_particle_fraction",
         "fraction": fraction,
         "class_count": class_count,
         "selected_class_count": keep_count,
-        "selection_order": "class_index",
-        "quality_ranked": False,
-        "note": "Temporary deterministic selection until image-aware class ranking is available.",
+        "selection_order": selection_order,
+        "quality_ranked": quality_ranked,
+        "note": policy_note,
+        **(quality_plan or {}),
     }
     metadata = dict(enriched.get("job_spec_metadata") or {})
     metadata.update({"interactive": False, "requires_approval": False})
     enriched["job_spec_metadata"] = metadata
     enriched["description"] = (
         f"Automatically select {keep_count}/{class_count} 2D classes "
-        f"({fraction:.0%} target by class count)."
+        f"({fraction:.0%} target by particle count)."
     )
     return enriched
+
+
+def build_quality_ranked_class_plan(
+    action: dict[str, Any],
+    workflow_state: dict[str, Any],
+    fraction: float,
+) -> dict[str, Any] | None:
+    """Rank 2D classes by per-class resolution and target a particle fraction."""
+    template_sources = (action.get("required_inputs") or {}).get("templates") or []
+    particle_sources = (action.get("required_inputs") or {}).get("particles") or []
+    if not template_sources or not particle_sources:
+        return None
+    template_source = template_sources[0]
+    particle_source = particle_sources[0]
+    try:
+        cs = cryosparc_client()
+        project = cs.find_project(workflow_state["project_uid"])
+        templates = project.find_job(template_source["source_job_uid"]).load_output(
+            template_source["source_output"]
+        )
+        particles = project.find_job(particle_source["source_job_uid"]).load_output(
+            particle_source["source_output"]
+        )
+        resolutions = list(templates["blob/res_A"])
+        class_ids = [int(value) for value in particles["alignments2D/class"]]
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError, OSError):
+        return None
+    if not resolutions or not class_ids:
+        return None
+    counts = {index: 0 for index in range(len(resolutions))}
+    for class_id in class_ids:
+        if class_id in counts:
+            counts[class_id] += 1
+    ranked = sorted(
+        (
+            (index, float(resolution), counts[index])
+            for index, resolution in enumerate(resolutions)
+            if counts[index] > 0 and math.isfinite(float(resolution))
+        ),
+        key=lambda item: (item[1], -item[2], item[0]),
+    )
+    if not ranked:
+        return None
+    target_particles = int(math.ceil(len(class_ids) * fraction))
+    selected = []
+    selected_particles = 0
+    for index, _, count in ranked:
+        selected.append(index)
+        selected_particles += count
+        if selected_particles >= target_particles:
+            break
+    return {
+        "target_particle_count": target_particles,
+        "selected_particle_count": selected_particles,
+        "selected_particle_fraction": selected_particles / len(class_ids),
+        "selected_class_indices": selected,
+        "available_particle_count": len(class_ids),
+    }
 
 
 def class_average_count(
@@ -290,6 +638,11 @@ def build_synthetic_next_actions(
         return [], []
     if current_node["job_type"] == "homo_refine_new":
         return build_parallel_homo_refine_actions(current_node)
+    if current_node["job_type"] == "class_2D_new":
+        fallback = build_extract_fallback_candidate(workflow_state, current_node)
+        if fallback["available"]:
+            return [fallback], []
+        return [], [fallback]
     micrograph_source = micrograph_source_from_node(current_node)
     if micrograph_source:
         template_source = find_available_template_source(
@@ -352,6 +705,105 @@ def build_synthetic_next_actions(
     )
     return ([action], []) if action["available"] else ([], [action])
 
+
+
+def build_extract_fallback_candidate(
+    workflow_state: dict[str, Any],
+    class2d_node: dict[str, Any],
+) -> dict[str, Any]:
+    """Offer re-extraction when 2D evidence suggests particles may be clipped."""
+    extract_node = find_previous_job_node(
+        workflow_state,
+        class2d_node,
+        job_type="extract_micrographs_multi",
+    )
+    action_id = f"fallback_{class2d_node['cryosparc_job_uid']}_extract_micrographs_multi"
+    if extract_node is None:
+        return {
+            "action_id": action_id,
+            "action_type": "forward",
+            "workflow_node_id": f"{class2d_node['workflow_node_id']}:extract_fallback",
+            "reference_job_uid": None,
+            "reference_status": None,
+            "job_type": "extract_micrographs_multi",
+            "description": "Re-extract particles with a larger box after reviewing 2D classes.",
+            "execution_mode": "create_job",
+            "available": False,
+            "blocked_by": ["No previous extract_micrographs_multi source was found."],
+            "required_inputs": {},
+            "missing_required_inputs": ["micrographs", "particles"],
+            "parameter_template": get_parameter_template("extract_micrographs_multi"),
+            "default_parameters": {},
+        }
+
+    required_inputs = {
+        name: connections
+        for name, connections in (extract_node.get("inputs") or {}).items()
+        if name in {"micrographs", "particles"} and connections
+    }
+    missing = [name for name in ("micrographs", "particles") if name not in required_inputs]
+    defaults = {
+        name: value
+        for name, value in (extract_node.get("key_parameters") or {}).items()
+        if name in {"box_size_pix", "compute_num_gpus"}
+    }
+    blocked_by = []
+    if missing:
+        blocked_by.append(
+            "Previous extraction is missing required input(s): " + ", ".join(missing)
+        )
+    return {
+        "action_id": action_id,
+        "action_type": "forward",
+        "workflow_node_id": f"{class2d_node['workflow_node_id']}:extract_fallback",
+        "reference_job_uid": extract_node["cryosparc_job_uid"],
+        "reference_status": extract_node["status"],
+        "job_type": "extract_micrographs_multi",
+        "description": (
+            "Fallback re-extraction after Class 2D review. If particles appear clipped "
+            "or truncated, increase box_size_pix before rerunning 2D classification."
+        ),
+        "execution_mode": "create_job",
+        "available": not blocked_by,
+        "blocked_by": blocked_by,
+        "required_inputs": required_inputs,
+        "missing_required_inputs": missing,
+        "parameter_template": build_parameter_template(extract_node),
+        "default_parameters": defaults,
+        "fallback_policy": {
+            "trigger_stage": "classification_2d",
+            "reason": "2D class images may reveal particle clipping caused by an undersized extraction box.",
+            "model_instruction": (
+                "Use this fallback only when 2D visual evidence indicates clipping; "
+                "increase box_size_pix enough to include the full particle and rerun classification."
+            ),
+        },
+    }
+
+
+def find_previous_job_node(
+    workflow_state: dict[str, Any],
+    node: dict[str, Any],
+    job_type: str,
+) -> dict[str, Any] | None:
+    """Find the nearest earlier job of a requested type in the workspace DAG."""
+    parents = set(node.get("parent_job_uids") or [])
+    nodes = sorted(
+        workflow_state.get("nodes") or [],
+        key=lambda item: int(str(item.get("cryosparc_job_uid", "J"))[1:])
+        if str(item.get("cryosparc_job_uid", "J"))[1:].isdigit()
+        else -1,
+        reverse=True,
+    )
+    for candidate in nodes:
+        if candidate.get("job_type") != job_type:
+            continue
+        if candidate.get("cryosparc_job_uid") in parents:
+            return candidate
+    for candidate in nodes:
+        if candidate.get("job_type") == job_type and candidate.get("status") == "completed":
+            return candidate
+    return None
 
 def merge_candidates(
     existing: list[dict[str, Any]],
@@ -673,8 +1125,6 @@ def build_parameter_template(
 def validate_model_decision_payload(
     payload: dict[str, Any],
     candidate_actions: list[dict[str, Any]] | None = None,
-    expected_state_snapshot_id: str | None = None,
-    expected_candidate_set_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate a model decision without creating or enqueueing CryoSPARC jobs."""
     decision, schema_issues = parse_model_decision(payload)
@@ -692,24 +1142,12 @@ def validate_model_decision_payload(
         candidate_actions=candidate_actions,
     )
 
-    context_issues = validate_context_ids(
-        decision,
-        expected_state_snapshot_id=expected_state_snapshot_id,
-        expected_candidate_set_id=expected_candidate_set_id,
-    )
-    if context_issues:
-        result.success = False
-        result.valid_actions = False
-        result.issues = context_issues + result.issues
-
     return result.model_dump()
 
 
 def execute_model_decision_payload(
     payload: dict[str, Any],
     candidate_actions: list[dict[str, Any]] | None = None,
-    expected_state_snapshot_id: str | None = None,
-    expected_candidate_set_id: str | None = None,
     dry_run: bool = True,
     project_uid: str | None = None,
     workspace_uid: str | None = None,
@@ -725,8 +1163,6 @@ def execute_model_decision_payload(
     validation = validate_model_decision_payload(
         payload,
         candidate_actions=candidate_actions,
-        expected_state_snapshot_id=expected_state_snapshot_id,
-        expected_candidate_set_id=expected_candidate_set_id,
     )
     if not validation["success"]:
         return {
@@ -959,42 +1395,6 @@ def make_execution_plan(
     }
 
 
-def validate_context_ids(
-    decision: ModelDecision,
-    expected_state_snapshot_id: str | None,
-    expected_candidate_set_id: str | None,
-) -> list[ValidationIssue]:
-    """Reject model decisions generated from stale workflow or candidate state."""
-    issues: list[ValidationIssue] = []
-    if expected_state_snapshot_id:
-        if not decision.state_snapshot_id:
-            issues.append(ValidationIssue(
-                code="missing_state_snapshot_id",
-                message="Decision must return the supplied state_snapshot_id",
-                path="state_snapshot_id",
-            ))
-        elif decision.state_snapshot_id != expected_state_snapshot_id:
-            issues.append(ValidationIssue(
-                code="stale_workflow_state",
-                message="Decision state_snapshot_id does not match the current workflow state",
-                path="state_snapshot_id",
-            ))
-    if expected_candidate_set_id:
-        if not decision.candidate_set_id:
-            issues.append(ValidationIssue(
-                code="missing_candidate_set_id",
-                message="Decision must return the supplied candidate_set_id",
-                path="candidate_set_id",
-            ))
-        elif decision.candidate_set_id != expected_candidate_set_id:
-            issues.append(ValidationIssue(
-                code="stale_candidate_set",
-                message="Decision candidate_set_id does not match the current candidate actions",
-                path="candidate_set_id",
-            ))
-    return issues
-
-
 def validate_decision_against_registry(
     decision: ModelDecision,
     candidate_actions: list[dict[str, Any]] | None = None,
@@ -1091,6 +1491,22 @@ def validate_action_against_candidates(
         parameter_template,
         path=f"{path}.parameters",
     )
+    gpu_cap_raw = os.getenv("CRYOAGENT_GPU_COUNT_CAP")
+    if gpu_cap_raw and "compute_num_gpus" in resolved_parameters:
+        try:
+            gpu_cap = max(1, int(gpu_cap_raw))
+        except ValueError:
+            gpu_cap = None
+        if gpu_cap is not None and resolved_parameters["compute_num_gpus"] > gpu_cap:
+            resolved_parameters["compute_num_gpus"] = gpu_cap
+            warnings.append(
+                ValidationIssue(
+                    severity="warning",
+                    code="gpu_count_capped",
+                    message=f"compute_num_gpus capped to {gpu_cap} by CRYOAGENT_GPU_COUNT_CAP",
+                    path=f"{path}.parameters.compute_num_gpus",
+                )
+            )
     for parameter_issue in parameter_issues:
         if parameter_issue.code == "unknown_parameter":
             parameter_issue.severity = "warning"

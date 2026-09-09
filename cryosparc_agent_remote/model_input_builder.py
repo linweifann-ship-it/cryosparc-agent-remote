@@ -5,6 +5,7 @@ from job_result import TERMINAL_STATUSES, build_internal_status_package
 from known_workflow_retriever import retrieve_known_workflow_steps
 from workflow_state import extract_workflow_state, find_node, job_uid_number
 from quality_policy import assess_node
+from dataset_info import normalize_dataset_info
 
 
 MODEL_INPUT_SCHEMA_VERSION = "2.0"
@@ -62,15 +63,19 @@ def build_dataset_info(
     known_workflow_dirs: list[str] | None,
 ) -> dict[str, Any]:
     """Normalize dataset metadata and attach known workflow steps if available."""
+    dataset_info = normalize_dataset_info(dataset_info)
     dataset = {
         "empiar_id": dataset_info.get("empiar_id"),
         "emdb_id": dataset_info.get("emdb_id"),
         "resolution": dataset_info.get("resolution"),
+        "target_resolution_A": dataset_info.get("target_resolution_A"),
         "input_type": dataset_info.get("input_type"),
         "macromolecules_type": dataset_info.get("macromolecules_type"),
         "num_of_maps": dataset_info.get("num_of_maps"),
         "abstract": dataset_info.get("abstract"),
         "known_workflow_steps": dataset_info.get("known_workflow_steps"),
+        "available_input_files": dataset_info.get("available_input_files"),
+        "dataset_parameter_facts": dataset_info.get("dataset_parameter_facts"),
         "pixel_size_A": dataset_info.get("pixel_size_A"),
         "accelerating_voltage_kv": dataset_info.get("accelerating_voltage_kv"),
         "spherical_aberration_mm": dataset_info.get("spherical_aberration_mm"),

@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1890" height="900" viewBox="0 0 1890 900">
+  <title>CryoSPARC MCP system architecture and request execution flow</title>
+  <desc>Publication-quality two-panel architecture figure for a machine-learning paper.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#4A4A4A"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#D55E00"/>
+    </marker>
+    <style>
+      text { font-family: "Times New Roman", Times, serif; fill: #222222; letter-spacing: 0; }
+      .panel-title { font-size: 13.33px; font-weight: 700; }
+      .module-title { font-size: 12px; font-weight: 700; }
+      .body { font-size: 10.67px; }
+      .small { font-size: 10px; }
+      .step { font-size: 10.67px; font-weight: 700; }
+      .label { font-size: 10px; font-style: italic; }
+      .border { stroke: #4A4A4A; stroke-width: 1.5; }
+      .arrow { fill: none; stroke: #4A4A4A; stroke-width: 1.5; marker-end: url(#arrow); }
+      .reverse { fill: none; stroke: #4A4A4A; stroke-width: 1.5; marker-end: url(#arrow); }
+      .error-arrow { fill: none; stroke: #D55E00; stroke-width: 1.5; stroke-dasharray: 6 4; marker-end: url(#arrow-red); }
+      .guide { stroke: #C8C8C8; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1890" height="900" fill="#FFFFFF"/>
+  <line x1="1200" y1="22" x2="1200" y2="878" class="guide"/>
+
+  <!-- Panel (a): Overall architecture -->
+  <text x="24" y="32" class="panel-title">(a) Overall architecture</text>
+
+  <g transform="translate(0 75)">
+  <!-- Reverse capability-discovery path -->
+  <path d="M580 185 L580 70 L110 70 L110 185" class="reverse"/>
+  <rect x="225" y="36" width="270" height="66" rx="2" fill="#EEF8F5" stroke="#009E73" stroke-width="1.2"/>
+  <text x="360" y="54" text-anchor="middle" class="small">
+    <tspan x="360" dy="0" font-weight="700">Capability discovery</tspan>
+    <tspan x="360" dy="15">get_candidate_actions:</tspan>
+    <tspan x="360" dy="13">available actions and input schemas</tspan>
+  </text>
+
+  <!-- Module 1 -->
+  <rect x="25" y="185" width="170" height="205" rx="2" fill="#E8F2F8" stroke="#0072B2" stroke-width="2"/>
+  <rect x="25" y="185" width="170" height="28" fill="#0072B2"/>
+  <text x="110" y="203" text-anchor="middle" class="module-title" fill="#FFFFFF">Upstream Model</text>
+  <rect x="40" y="232" width="140" height="2" fill="#0072B2"/>
+  <text x="110" y="258" text-anchor="middle" class="body">
+    <tspan x="110" dy="0">Generate structured</tspan>
+    <tspan x="110" dy="14">decision JSON</tspan>
+  </text>
+  <text x="110" y="332" text-anchor="middle" class="small">[MODEL]</text>
+
+  <!-- Module 2 -->
+  <rect x="260" y="185" width="170" height="205" rx="2" fill="#EAF6FC" stroke="#0072B2" stroke-width="2"/>
+  <rect x="260" y="185" width="170" height="28" fill="#56B4E9"/>
+  <text x="345" y="197" text-anchor="middle" class="module-title">
+    <tspan x="345" dy="0">MCP Interface</tspan>
+    <tspan x="345" dy="12">&amp; Validation</tspan>
+  </text>
+  <rect x="275" y="232" width="140" height="46" fill="#FFFFFF" class="border"/>
+  <text x="345" y="251" text-anchor="middle" class="body">
+    <tspan x="345" dy="0">validate_model_decision</tspan>
+  </text>
+  <rect x="275" y="292" width="140" height="56" fill="#FFFFFF" class="border"/>
+  <text x="345" y="312" text-anchor="middle" class="body">
+    <tspan x="345" dy="0">Schema and parameter</tspan>
+    <tspan x="345" dy="14">validation</tspan>
+  </text>
+  <text x="345" y="374" text-anchor="middle" class="small">[VALIDATE]</text>
+
+  <!-- Module 3 -->
+  <rect x="495" y="185" width="170" height="205" rx="2" fill="#E7F5F0" stroke="#009E73" stroke-width="2"/>
+  <rect x="495" y="185" width="170" height="28" fill="#009E73"/>
+  <text x="580" y="203" text-anchor="middle" class="module-title" fill="#222222">Action Registry</text>
+  <rect x="510" y="231" width="140" height="112" fill="#FFFFFF" class="border"/>
+  <text x="525" y="253" class="body">
+    <tspan x="525" dy="0">• action_id</tspan>
+    <tspan x="525" dy="21">• input schema</tspan>
+    <tspan x="525" dy="21">• approval policy</tspan>
+    <tspan x="525" dy="21">• wrapper mapping</tspan>
+  </text>
+  <text x="580" y="374" text-anchor="middle" class="small">[REGISTRY]</text>
+
+  <!-- Approval gate -->
+  <polygon points="693,265 720,242 747,265 720,288" fill="#FFF8CC" stroke="#9A7A00" stroke-width="2"/>
+  <text x="720" y="268" text-anchor="middle" class="small" font-weight="700">A</text>
+  <text x="720" y="316" text-anchor="middle" class="small">
+    <tspan x="720" dy="0">Human approval</tspan>
+    <tspan x="720" dy="12">for restricted actions</tspan>
+  </text>
+
+  <!-- Module 4 -->
+  <rect x="780" y="185" width="170" height="205" rx="2" fill="#FDF3DF" stroke="#E69F00" stroke-width="2"/>
+  <rect x="780" y="185" width="170" height="28" fill="#E69F00"/>
+  <text x="865" y="197" text-anchor="middle" class="module-title">
+    <tspan x="865" dy="0">CryoSPARC</tspan>
+    <tspan x="865" dy="12">Tool Wrapper</tspan>
+  </text>
+  <rect x="795" y="231" width="140" height="112" fill="#FFFFFF" class="border"/>
+  <text x="810" y="253" class="body">
+    <tspan x="810" dy="0">• CLI tools</tspan>
+    <tspan x="810" dy="28">• cryosparc-tools API</tspan>
+    <tspan x="810" dy="28">• normalized result</tspan>
+  </text>
+  <text x="865" y="374" text-anchor="middle" class="small">[WRAPPER]</text>
+
+  <!-- Module 5 -->
+  <rect x="1015" y="185" width="165" height="205" rx="2" fill="#F8EDF4" stroke="#CC79A7" stroke-width="2"/>
+  <rect x="1015" y="185" width="165" height="28" fill="#CC79A7"/>
+  <text x="1097.5" y="203" text-anchor="middle" class="module-title" fill="#222222">CryoSPARC Workflow</text>
+  <rect x="1030" y="231" width="135" height="112" fill="#FFFFFF" class="border"/>
+  <text x="1042" y="253" class="body">
+    <tspan x="1042" dy="0">• Project / Workspace</tspan>
+    <tspan x="1042" dy="28">• Jobs and workflow nodes</tspan>
+    <tspan x="1042" dy="28">• Workers / GPUs</tspan>
+  </text>
+  <text x="1097.5" y="374" text-anchor="middle" class="small">[WORKFLOW]</text>
+
+  <!-- Architecture arrows and labels -->
+  <path d="M195 266 L260 266" class="arrow"/>
+  <text x="227.5" y="240" text-anchor="middle" class="label">
+    <tspan x="227.5" dy="0">decision</tspan>
+    <tspan x="227.5" dy="11">JSON</tspan>
+  </text>
+
+  <path d="M430 266 L495 266" class="arrow"/>
+  <text x="462.5" y="240" text-anchor="middle" class="label">
+    <tspan x="462.5" dy="0">validated</tspan>
+    <tspan x="462.5" dy="11">action</tspan>
+  </text>
+
+  <path d="M665 266 L693 266" class="arrow"/>
+  <path d="M747 266 L780 266" class="arrow"/>
+  <text x="720" y="225" text-anchor="middle" class="label">dispatch</text>
+
+  <path d="M950 266 L1015 266" class="arrow"/>
+  <text x="982.5" y="252" text-anchor="middle" class="label">execute</text>
+  </g>
+
+  <!-- Panel (b): Simplified request execution flow -->
+  <g transform="translate(150 0)">
+  <text x="1070" y="32" class="panel-title">(b) Request execution flow</text>
+
+  <!-- Normal flow -->
+  <rect x="1085" y="65" width="250" height="48" fill="#E7F5F0" stroke="#009E73" stroke-width="1.5"/>
+  <text x="1100" y="93" class="step">1.</text>
+  <text x="1120" y="85" class="body">
+    <tspan x="1120" dy="0">Discover candidate actions</tspan>
+    <tspan x="1120" dy="14">and input schemas</tspan>
+  </text>
+
+  <rect x="1085" y="145" width="250" height="48" fill="#E8F2F8" stroke="#0072B2" stroke-width="1.5"/>
+  <text x="1100" y="173" class="step">2.</text>
+  <text x="1120" y="165" class="body">
+    <tspan x="1120" dy="0">Select action and generate</tspan>
+    <tspan x="1120" dy="14">decision JSON</tspan>
+  </text>
+
+  <rect x="1085" y="225" width="250" height="40" fill="#EAF6FC" stroke="#56B4E9" stroke-width="1.5"/>
+  <text x="1100" y="249" class="step">3.</text>
+  <text x="1120" y="249" class="body">Validate decision schema</text>
+
+  <rect x="1085" y="297" width="250" height="52" fill="#E7F5F0" stroke="#009E73" stroke-width="1.5"/>
+  <text x="1100" y="327" class="step">4.</text>
+  <text x="1120" y="318" class="body">
+    <tspan x="1120" dy="0">Resolve action_id and validate</tspan>
+    <tspan x="1120" dy="14">parameters / workflow context</tspan>
+  </text>
+
+  <!-- Approval decision -->
+  <polygon points="1210,385 1315,425 1210,465 1105,425" fill="#FFF8CC" stroke="#9A7A00" stroke-width="1.7"/>
+  <text x="1122" y="429" class="step">5.</text>
+  <text x="1215" y="422" text-anchor="middle" class="body" font-weight="700">
+    <tspan x="1215" dy="0">Approval</tspan>
+    <tspan x="1215" dy="13">required?</tspan>
+  </text>
+
+  <rect x="1085" y="510" width="250" height="58" fill="#FDF3DF" stroke="#E69F00" stroke-width="1.5"/>
+  <text x="1100" y="543" class="step">6.</text>
+  <text x="1120" y="531" class="body">
+    <tspan x="1120" dy="0">Dispatch wrapper; create,</tspan>
+    <tspan x="1120" dy="14">configure and queue job</tspan>
+  </text>
+
+  <rect x="1085" y="615" width="250" height="58" fill="#F7F7F7" class="border"/>
+  <text x="1100" y="648" class="step">7.</text>
+  <text x="1120" y="636" class="body">
+    <tspan x="1120" dy="0">Return normalized acknowledgement</tspan>
+    <tspan x="1120" dy="14">{job_uid, status, warnings, errors}</tspan>
+  </text>
+
+  <!-- Solid flow -->
+  <path d="M1210 113 L1210 145" class="arrow"/>
+  <path d="M1210 193 L1210 225" class="arrow"/>
+  <path d="M1210 265 L1210 297" class="arrow"/>
+  <path d="M1210 349 L1210 385" class="arrow"/>
+  <path d="M1210 465 L1210 510" class="arrow"/>
+  <text x="1220" y="489" class="small">No</text>
+  <path d="M1210 568 L1210 615" class="arrow"/>
+
+  <!-- Validation rejection -->
+  <rect x="1405" y="244" width="245" height="72" fill="#FCEDE8" stroke="#D55E00" stroke-width="1.5"/>
+  <text x="1527.5" y="263" text-anchor="middle" class="body" font-weight="700">
+    <tspan x="1527.5" dy="0">Validation rejected</tspan>
+    <tspan x="1527.5" dy="16" font-weight="400">invalid schema, action_id,</tspan>
+    <tspan x="1527.5" dy="14" font-weight="400">parameters or context</tspan>
+  </text>
+  <path d="M1335 245 L1370 245 L1370 280 L1405 280" class="error-arrow"/>
+  <path d="M1335 323 L1370 323 L1370 290 L1405 290" class="error-arrow"/>
+
+  <!-- Host/client approval -->
+  <rect x="1405" y="385" width="245" height="48" fill="#FFF8CC" stroke="#9A7A00" stroke-width="1.5"/>
+  <text x="1527.5" y="414" text-anchor="middle" class="body" font-weight="700">Host / client approval</text>
+  <path d="M1315 425 L1360 425 L1360 409 L1405 409" class="arrow"/>
+  <text x="1337" y="416" class="small">Yes</text>
+  <path d="M1405 421 L1378 421 L1378 520 L1335 520" class="arrow"/>
+  <text x="1385" y="505" class="small">Accepted</text>
+
+  <rect x="1405" y="457" width="245" height="44" fill="#FCEDE8" stroke="#D55E00" stroke-width="1.5"/>
+  <text x="1527.5" y="476" text-anchor="middle" class="body" font-weight="700">
+    <tspan x="1527.5" dy="0">Approval denied / cancelled</tspan>
+    <tspan x="1527.5" dy="14" font-weight="400">do not execute</tspan>
+  </text>
+  <path d="M1527.5 433 L1527.5 457" class="error-arrow"/>
+
+  <!-- Tool error -->
+  <rect x="1405" y="534" width="245" height="58" fill="#FCEDE8" stroke="#D55E00" stroke-width="1.5"/>
+  <text x="1527.5" y="555" text-anchor="middle" class="body" font-weight="700">
+    <tspan x="1527.5" dy="0">Tool execution error</tspan>
+    <tspan x="1527.5" dy="15" font-weight="400">normalized response; isError=true</tspan>
+  </text>
+  <path d="M1335 550 L1405 550" class="error-arrow"/>
+
+  <!-- Async status note -->
+  <rect x="1405" y="620" width="245" height="48" fill="#F8EDF4" stroke="#CC79A7" stroke-width="1.2"/>
+  <text x="1527.5" y="639" text-anchor="middle" class="body" font-weight="700">
+    <tspan x="1527.5" dy="0">Asynchronous execution</tspan>
+    <tspan x="1527.5" dy="14" font-weight="400">query job status separately</tspan>
+  </text>
+  <path d="M1405 644 L1335 644" class="reverse"/>
+
+  <!-- Legend -->
+  <rect x="1085" y="720" width="565" height="75" fill="#FFFFFF" class="border"/>
+  <text x="1100" y="739" class="module-title">Legend</text>
+  <line x1="1100" y1="758" x2="1152" y2="758" class="arrow"/>
+  <text x="1163" y="762" class="small">Solid arrow: normal execution</text>
+  <line x1="1335" y1="758" x2="1387" y2="758" class="error-arrow"/>
+  <text x="1398" y="762" class="small">Dashed arrow: error or rejection</text>
+  <path d="M1152 781 L1100 781" class="reverse"/>
+  <text x="1163" y="785" class="small">Reverse arrow: discovery or status query</text>
+  </g>
+</svg>

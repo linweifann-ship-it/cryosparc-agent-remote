@@ -26,6 +26,10 @@ def adapt_v2_decision_to_internal(
         }
 
     requested_actions = normalize_requested_actions(v2_decision)
+    requested_actions = expand_mandatory_class2d_trials(
+        requested_actions,
+        candidate_actions,
+    )
     if not requested_actions:
         return {
             "success": False,
@@ -49,7 +53,13 @@ def adapt_v2_decision_to_internal(
                     "action_type": candidate["action_type"],
                     "workflow_node_id": candidate["workflow_node_id"],
                     "job_type": candidate["job_type"],
-                    "parameters": requested.get("parameters") or {},
+                    "parameters": {
+                        **normalize_registry_defaults(
+                            candidate.get("default_parameters") or {},
+                            candidate.get("parameter_template") or {},
+                        ),
+                        **(requested.get("parameters") or {}),
+                    },
                     "connections": requested.get("connections"),
                 }
             )
@@ -60,6 +70,14 @@ def adapt_v2_decision_to_internal(
 
     if issues:
         return {"success": False, "issues": issues}
+
+    # A model may call selection among completed branches a "branch" even
+    # though it is submitting one ordinary forward candidate. Treat that
+    # label as forward when the live candidates confirm this is safe.
+    if decision_type == "branch" and selected_actions and all(
+        action.get("action_type") == "forward" for action in selected_actions
+    ):
+        decision_type = "forward"
 
     internal_decision_type = resolve_internal_decision_type(
         decision_type,
@@ -85,11 +103,25 @@ def adapt_v2_decision_to_internal(
     }
 
 
+def normalize_registry_defaults(
+    defaults: dict[str, Any],
+    parameter_template: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Normalize legacy CryoSPARC registry defaults without changing model input."""
+    normalized = dict(defaults)
+    for name, value in normalized.items():
+        spec = parameter_template.get(name) or {}
+        if spec.get("type") == "boolean" and isinstance(value, int) and value in (0, 1):
+            normalized[name] = bool(value)
+    return normalized
+
+
 def execute_v2_model_decision_payload(
     v2_decision: dict[str, Any],
     project_uid: str,
     workspace_uid: str,
     current_node_id: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
     dry_run: bool = True,
     allow_approval_required_create: bool = False,
 ) -> dict[str, Any]:
@@ -98,6 +130,7 @@ def execute_v2_model_decision_payload(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
+        dataset_info=dataset_info,
     )
     adapter_result = adapt_v2_decision_to_internal(
         v2_decision,
@@ -113,6 +146,31 @@ def execute_v2_model_decision_payload(
             "internal_decision": None,
             "execution_result": None,
             "issues": adapter_result["issues"],
+        }
+
+    if (
+        v2_decision.get("decision_type") == "stop"
+        and (candidate_context.get("workflow_guidance") or {}).get(
+            "must_continue_for_target"
+        )
+    ):
+        return {
+            "success": False,
+            "dry_run": dry_run,
+            "execution_mode": "workflow_goal_guard",
+            "candidate_context": summarize_candidate_context(candidate_context),
+            "internal_decision": adapter_result["internal_decision"],
+            "execution_result": None,
+            "issues": [{
+                "severity": "error",
+                "code": "resolution_target_not_met",
+                "message": (
+                    "Cannot stop: the explicit target resolution has not been met "
+                    "and a refinement candidate is available."
+                ),
+                "path": "decision_type",
+            }],
+            "workflow_guidance": candidate_context.get("workflow_guidance") or {},
         }
 
     execution_result = execute_model_decision_payload(
@@ -204,6 +262,46 @@ def normalize_requested_actions(v2_decision: dict[str, Any]) -> list[dict[str, A
             "workflow_node_id": v2_decision.get("workflow_node_id"),
         }
     ]
+
+
+def expand_mandatory_class2d_trials(
+    requested_actions: list[dict[str, Any]],
+    candidate_actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand a compact Class 2D request into the required box-size batch."""
+    if len(requested_actions) != 1:
+        return requested_actions
+    requested = requested_actions[0]
+    if requested.get("action_id"):
+        return requested_actions
+    if (requested.get("job_type") or requested.get("action")) != "class_2D_new":
+        return requested_actions
+    trials = [
+        candidate for candidate in candidate_actions
+        if candidate.get("available") and candidate.get("class_2d_trial")
+    ]
+    if len(trials) <= 1:
+        return requested_actions
+
+    expanded: list[dict[str, Any]] = []
+    for candidate in trials:
+        connections = {
+            input_name: {
+                "source_job_uid": refs[0].get("source_job_uid"),
+                "source_output": refs[0].get("source_output"),
+            }
+            for input_name, refs in (candidate.get("required_inputs") or {}).items()
+            if refs
+        }
+        if not connections:
+            connections = requested.get("connections")
+        expanded.append({
+            **requested,
+            "action_id": candidate["action_id"],
+            "workflow_node_id": candidate["workflow_node_id"],
+            "connections": connections,
+        })
+    return expanded
 
 
 def build_generic_selected_action(

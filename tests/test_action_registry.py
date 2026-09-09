@@ -353,33 +353,17 @@ def forward_decision(**overrides):
     decision.update(overrides)
     return decision
 
+    def test_inspect_picks_is_automated(self):
+        from job_specs import get_job_spec, get_parameter_template
+
+        spec = get_job_spec("inspect_picks_v2")
+        self.assertFalse(spec["interactive"])
+        self.assertFalse(spec["requires_approval"])
+        self.assertIn("ncc_score_thresh", get_parameter_template("inspect_picks_v2"))
+        self.assertIn("keep_threshold", get_parameter_template("inspect_picks_v2"))
+
 
 class ActionRegistryFixedTests(unittest.TestCase):
-    def test_stale_context_ids_are_rejected(self):
-        decision = {
-            "schema_version": "1.0",
-            "state_snapshot_id": "state_old",
-            "candidate_set_id": "candidates_old",
-            "decision_type": "stop",
-            "selected_actions": [],
-            "rollback_target": None,
-            "branch_plan": None,
-            "reason": "done",
-            "confidence": 1.0,
-            "risk_flags": [],
-            "evidence": [],
-        }
-        result = validate_model_decision_payload(
-            decision,
-            expected_state_snapshot_id="state_current",
-            expected_candidate_set_id="candidates_current",
-        )
-        self.assertFalse(result["success"])
-        self.assertEqual(
-            {issue["code"] for issue in result["issues"]},
-            {"stale_workflow_state", "stale_candidate_set"},
-        )
-
     def test_valid_forward_returns_planned_action(self):
         result = execute_model_decision_payload(
             forward_decision(),
@@ -564,6 +548,56 @@ class ActionRegistryFixedTests(unittest.TestCase):
         self.assertEqual(
             result["execution_plan"]["actions"][0]["rollback_target"],
             rollback_target,
+        )
+
+    def test_class2d_completed_generates_extract_fallback_candidate(self):
+        state = select_2d_workflow_state()
+        extract = {
+            "workflow_node_id": "J36",
+            "logical_node_id": "node_extract_micrographs_multi_001",
+            "cryosparc_job_uid": "J36",
+            "job_type": "extract_micrographs_multi",
+            "title": "Extract From Micrographs (GPU)",
+            "status": "completed",
+            "updated_at": "2026-07-02T00:00:00+00:00",
+            "parent_job_uids": [],
+            "parent_workflow_node_ids": [],
+            "parent_logical_node_ids": [],
+            "child_job_uids": ["J37"],
+            "child_workflow_node_ids": ["J37"],
+            "child_logical_node_ids": ["node_class_2D_new_001"],
+            "inputs": {
+                "micrographs": [{"source_job_uid": "J14", "source_output": "micrographs"}],
+                "particles": [{"source_job_uid": "J14", "source_output": "particles"}],
+            },
+            "outputs": {},
+            "key_parameters": {"box_size_pix": 320, "compute_num_gpus": 1},
+            "runtime": {},
+            "has_error": False,
+            "has_warning": False,
+        }
+        state["nodes"].insert(1, extract)
+        class2d = state["nodes"][-1]
+        class2d.update({
+            "logical_node_id": "node_class_2D_new_001",
+            "job_type": "class_2D_new",
+            "parent_job_uids": ["J36"],
+            "parent_workflow_node_ids": ["J36"],
+            "parent_logical_node_ids": ["node_extract_micrographs_multi_001"],
+        })
+        candidates, blocked = generate_candidate_actions(state, "J37")
+        self.assertFalse(blocked)
+        fallback = next(
+            action for action in candidates
+            if action["job_type"] == "extract_micrographs_multi"
+        )
+        self.assertEqual(fallback["action_type"], "forward")
+        self.assertEqual(fallback["reference_job_uid"], "J36")
+        self.assertEqual(fallback["default_parameters"]["box_size_pix"], 320)
+        self.assertIn("box_size_pix", fallback["parameter_template"])
+        self.assertEqual(
+            fallback["required_inputs"]["particles"][0]["source_job_uid"],
+            "J14",
         )
 
     def test_select_2d_completed_generates_homo_refine_candidate(self):

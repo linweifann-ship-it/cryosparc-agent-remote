@@ -1,6 +1,11 @@
 import unittest
 
-from workflow_policy import annotate_candidates, infer_current_stage, job_stage
+from workflow_policy import (
+    annotate_candidates,
+    build_decision_guidance,
+    infer_current_stage,
+    job_stage,
+)
 
 
 class WorkflowPolicyTests(unittest.TestCase):
@@ -28,6 +33,29 @@ class WorkflowPolicyTests(unittest.TestCase):
              "job_type": "homo_refine_new", "status": "completed"}
         ])
         self.assertIn("validation", state["next_stages"])
+
+    def test_target_resolution_requires_refinement(self):
+        guidance = build_decision_guidance(
+            {"target_resolution_A": 2.8},
+            {"resolution_evidence": {"values": {"fsc_resolution": 3.58}}},
+            {"job_type": "validation"},
+            [{"job_type": "nonuniform_refine_new", "available": True}],
+        )
+        self.assertEqual(guidance["target_status"], "unmet")
+        self.assertTrue(guidance["must_continue_for_target"])
+
+    def test_inspect_picks_is_preferred_after_blob_picker(self):
+        guidance = build_decision_guidance(
+            {},
+            {},
+            {"job_type": "blob_picker_gpu"},
+            [{"job_type": "inspect_picks_v2", "available": True}],
+        )
+        self.assertEqual(
+            guidance["inspect_picks"]["priority"],
+            "mandatory",
+        )
+        self.assertIn("MUST choose inspect_picks_v2", guidance["inspect_picks"]["model_instruction"])
 
     def test_policy_is_advisory_and_does_not_filter(self):
         candidates = [{"job_type": "patch_ctf_estimation_multi"},

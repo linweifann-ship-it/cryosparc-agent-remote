@@ -23,9 +23,72 @@ from v2_decision_adapter import (
     execute_v2_model_decision_payload,
 )
 from workflow_state import extract_workflow_state
+from vision_inputs import (
+    build_class_average_visual_context,
+    build_pick_inspection_visual_context,
+)
+from kb_bridge import call_kb_tool, get_decision_context
+from cryosift_adapter import evaluate_2d_classes_with_cryosift as evaluate_2d_classes_with_cryosift_impl
 
 
 mcp = FastMCP("cryoSPARC Tools")
+
+
+# Read-only knowledge-base tools. They are prefixed to distinguish historical
+# evidence from live CryoSPARC execution tools.
+@mcp.tool()
+def kb_search_cryoem_kb(query: str, top_k: int = 5, kb_types: list[str] | None = None) -> dict:
+    return call_kb_tool("search_cryoem_kb", {"query": query, "top_k": top_k, "kb_types": kb_types})
+
+
+@mcp.tool()
+def kb_get_dataset_summary(dataset_id: str) -> dict:
+    return call_kb_tool("get_dataset_summary", {"dataset_id": dataset_id})
+
+
+@mcp.tool()
+def kb_get_workflow(dataset_id: str) -> dict:
+    return call_kb_tool("get_workflow", {"dataset_id": dataset_id})
+
+
+@mcp.tool()
+def kb_get_maps(dataset_id: str | None = None, multi_map: bool | str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_maps", {"dataset_id": dataset_id, "multi_map": multi_map, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_failures(failure_class: str | None = None, job_type: str | None = None, dataset_id: str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_failures", {"failure_class": failure_class, "job_type": job_type, "dataset_id": dataset_id, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_images(dataset_id: str | None = None, job_id: str | None = None, image_type: str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_images", {"dataset_id": dataset_id, "job_id": job_id, "image_type": image_type, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_find_similar_cases(input_type: str | None = None, molecule_type: str | None = None, multi_map: bool | str | None = None, top_k: int = 10) -> dict:
+    return call_kb_tool("find_similar_cases", {"input_type": input_type, "molecule_type": molecule_type, "multi_map": multi_map, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_next_steps(job_type: str, top_k: int = 10) -> dict:
+    return call_kb_tool("get_next_steps", {"job_type": job_type, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_job_doc(job_type: str | None = None, query: str | None = None, top_k: int = 10) -> dict:
+    return call_kb_tool("get_job_doc", {"job_type": job_type, "query": query, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_manual_annotations(annotation_type: str = "all", dataset_id: str | None = None, job_type: str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_manual_annotations", {"annotation_type": annotation_type, "dataset_id": dataset_id, "job_type": job_type, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_decision_context(dataset_info: dict | None = None, current_state: dict | None = None, candidate_actions: list[dict] | None = None, top_k: int = 5) -> dict:
+    return get_decision_context(dataset_info, current_state, candidate_actions, top_k)
 
 
 # Basic read-only health and environment tools.
@@ -142,6 +205,50 @@ def get_workflow_state(
 
 
 @mcp.tool()
+def get_class_average_visual_context(
+    project_uid: str,
+    job_uid: str,
+    max_classes: int = 50,
+) -> dict:
+    """Return a class-id-labelled contact sheet for a completed 2D job."""
+    return build_class_average_visual_context(
+        project_uid=project_uid,
+        job_uid=job_uid,
+        max_classes=max_classes,
+    )
+
+
+@mcp.tool()
+def get_pick_inspection_visual_context(
+    project_uid: str,
+    job_uid: str,
+    max_micrographs: int = 6,
+    max_picks_per_micrograph: int = 400,
+    micrograph_root: str | None = None,
+) -> dict:
+    """Return micrograph thumbnails with Blob Picker locations overlaid."""
+    return build_pick_inspection_visual_context(
+        project_uid=project_uid,
+        job_uid=job_uid,
+        max_micrographs=max_micrographs,
+        max_picks_per_micrograph=max_picks_per_micrograph,
+        micrograph_root=micrograph_root,
+    )
+
+
+@mcp.tool()
+def evaluate_2d_classes_with_cryosift(
+    project_uid: str,
+    job_uid: str,
+    threshold: float = 3.0,
+    output_dir: str | None = None,
+    timeout_seconds: int = 1800,
+) -> dict:
+    """Score completed Class 2D averages with optional CryoSift CNN."""
+    return evaluate_2d_classes_with_cryosift_impl(project_uid, job_uid, threshold, output_dir, timeout_seconds)
+
+
+@mcp.tool()
 def validate_model_decision(
     decision: dict[str, Any],
     project_uid: str | None = None,
@@ -164,12 +271,6 @@ def validate_model_decision(
     return validate_model_decision_payload(
         decision,
         candidate_actions=candidate_actions,
-        expected_state_snapshot_id=(
-            candidate_context["state_snapshot_id"] if candidate_context else None
-        ),
-        expected_candidate_set_id=(
-            candidate_context["candidate_set_id"] if candidate_context else None
-        ),
     )
 
 
@@ -185,8 +286,8 @@ def execute_model_decision(
     """
     Validate a model decision and return the execution plan.
 
-    Defaults to dry-run mode. Live execution requires dry_run=false and the
-    necessary execution context and approval policy.
+    Defaults to dry-run mode. The current implementation never creates or
+    queues CryoSPARC jobs.
     """
     candidate_context = None
     if project_uid and workspace_uid:
@@ -200,12 +301,6 @@ def execute_model_decision(
     return execute_model_decision_payload(
         decision,
         candidate_actions=candidate_actions,
-        expected_state_snapshot_id=(
-            candidate_context["state_snapshot_id"] if candidate_context else None
-        ),
-        expected_candidate_set_id=(
-            candidate_context["candidate_set_id"] if candidate_context else None
-        ),
         dry_run=dry_run,
         project_uid=project_uid,
         workspace_uid=workspace_uid,
@@ -329,6 +424,7 @@ def validate_v2_model_decision(
     project_uid: str,
     workspace_uid: str,
     current_node_id: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
 ) -> dict:
     """
     Adapt a V2 model decision to the internal decision schema and validate it.
@@ -337,6 +433,7 @@ def validate_v2_model_decision(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
+        dataset_info=dataset_info,
     )
     adapter_result = adapt_v2_decision_to_internal(
         decision,
@@ -348,11 +445,126 @@ def validate_v2_model_decision(
         adapter_result["internal_decision"],
         candidate_actions=candidate_context["candidate_actions"],
     )
+    validation = apply_workflow_goal_guard(
+        decision,
+        validation,
+        candidate_context.get("workflow_guidance") or {},
+    )
+    validation = apply_mandatory_trial_guard(
+        adapter_result.get("internal_decision") or decision,
+        validation,
+        candidate_context.get("candidate_actions") or [],
+    )
+    validation = apply_inspect_parameter_guard(decision, validation)
     return {
         "success": validation["success"],
         "adapter_result": adapter_result,
         "validation": validation,
+        "workflow_guidance": candidate_context.get("workflow_guidance") or {},
     }
+
+
+def apply_inspect_parameter_guard(
+    decision: dict[str, Any],
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    """Require an explicit automated filtering choice for Inspect Picks."""
+    if not validation.get("success") or decision.get("job_type") != "inspect_picks_v2":
+        return validation
+    raw_parameters = decision.get("parameters") or {}
+    if isinstance(decision.get("selected_actions"), list):
+        raw_parameters = {}
+        for action in decision["selected_actions"]:
+            if isinstance(action, dict) and action.get("job_type") == "inspect_picks_v2":
+                raw_parameters.update(action.get("parameters") or {})
+    filtering_keys = {
+        "ncc_score_thresh", "lpower_thresh_min", "lpower_thresh_max",
+        "curv_thresh", "sinu_thresh", "do_auto_cluster", "keep_threshold",
+    }
+    chosen = filtering_keys.intersection(raw_parameters)
+    if chosen and not (chosen == {"do_auto_cluster"} and raw_parameters.get("do_auto_cluster") is False):
+        return validation
+    result = dict(validation)
+    result["success"] = False
+    result["valid_actions"] = False
+    result["issues"] = list(result.get("issues") or []) + [{
+        "severity": "error",
+        "code": "inspect_parameters_required",
+        "message": (
+            "Inspect Picks must include an explicit automated filtering decision: "
+            "a numeric threshold or do_auto_cluster=true."
+        ),
+        "path": "parameters",
+    }]
+    return result
+
+
+def apply_mandatory_trial_guard(
+    decision: dict[str, Any],
+    validation: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require every generated box-size trial before allowing Class 2D."""
+    trials = {
+        action.get("action_id")
+        for action in candidates
+        if action.get("available") and (
+            action.get("box_size_trial") or action.get("class_2d_trial")
+        )
+    }
+    if not trials or not validation.get("success"):
+        return validation
+    requested = decision.get("selected_actions")
+    if not isinstance(requested, list):
+        requested = [decision] if decision.get("action_id") else []
+    selected = {
+        action.get("action_id")
+        for action in requested
+        if isinstance(action, dict)
+    }
+    if trials.issubset(selected) and decision.get("decision_type") in {"forward", "branch"}:
+        return validation
+    result = dict(validation)
+    result["success"] = False
+    result["valid_actions"] = False
+    result["issues"] = list(result.get("issues") or []) + [{
+        "severity": "error",
+        "code": "mandatory_box_size_trials_missing",
+        "message": (
+            "All available extraction/Class 2D trial actions must be selected together "
+            "in one forward decision before proceeding."
+        ),
+        "path": "selected_actions",
+    }]
+    return result
+
+
+def apply_workflow_goal_guard(
+    decision: dict[str, Any],
+    validation: dict[str, Any],
+    guidance: dict[str, Any],
+) -> dict[str, Any]:
+    """Prevent premature stop when an explicit resolution target is unmet."""
+    if (
+        validation.get("success")
+        and decision.get("decision_type") == "stop"
+        and guidance.get("must_continue_for_target")
+    ):
+        validation = dict(validation)
+        validation["success"] = False
+        validation["valid_actions"] = False
+        issues = list(validation.get("issues") or [])
+        issues.append({
+            "severity": "error",
+            "code": "resolution_target_not_met",
+            "message": (
+                "Cannot stop: the explicit target resolution has not been met and "
+                "a refinement candidate is available."
+            ),
+            "path": "decision_type",
+        })
+        validation["issues"] = issues
+    return validation
 
 
 @mcp.tool()
@@ -361,6 +573,7 @@ def execute_v2_model_decision(
     project_uid: str,
     workspace_uid: str,
     current_node_id: str | None = None,
+    dataset_info: dict[str, Any] | None = None,
     dry_run: bool = True,
     allow_approval_required_create: bool = False,
 ) -> dict:
@@ -372,6 +585,7 @@ def execute_v2_model_decision(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
+        dataset_info=dataset_info,
         dry_run=dry_run,
         allow_approval_required_create=allow_approval_required_create,
     )

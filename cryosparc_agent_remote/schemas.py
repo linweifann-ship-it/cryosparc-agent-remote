@@ -40,8 +40,6 @@ class BranchPlan(BaseModel):
 # Top-level model output contract for the upstream decision model.
 class ModelDecision(BaseModel):
     schema_version: Literal["1.0"]
-    state_snapshot_id: str | None = None
-    candidate_set_id: str | None = None
     decision_type: DecisionType
     selected_actions: list[Action]
     rollback_target: RollbackTarget | None = None

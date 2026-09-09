@@ -6,6 +6,7 @@ from v2_decision_adapter import (
     adapt_v2_decision_to_internal,
     execute_v2_model_decision_payload,
 )
+from action_registry import validate_parameters
 
 
 def candidate_actions():
@@ -168,6 +169,85 @@ class V2DecisionAdapterTests(unittest.TestCase):
             result["execution_result"]["execution_plan"]["actions"][0]["job_type"],
             "class_2D_new",
         )
+
+
+    def test_initial_import_inherits_dataset_parameters(self):
+        from v2_decision_adapter import adapt_v2_decision_to_internal
+
+        candidates = [{
+            "action_id": "initial_import_micrographs",
+            "action_type": "forward",
+            "workflow_node_id": "initial:import_micrographs",
+            "job_type": "import_micrographs",
+            "default_parameters": {
+                "blob_paths": "/data/*.mrc",
+                "psize_A": 0.6575,
+                "accel_kv": 300,
+                "cs_mm": 2.7,
+                "total_dose_e_per_A2": 53,
+            },
+        }]
+        decision = {"decision_type": "forward", "action": "import_micrographs", "parameters": {}}
+        result = adapt_v2_decision_to_internal(decision, candidates)
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            result["internal_decision"]["selected_actions"][0]["parameters"]["psize_A"],
+            0.6575,
+        )
+
+    def test_registry_boolean_defaults_are_normalized(self):
+        candidates = [{
+            "action_id": "forward_J19",
+            "action_type": "forward",
+            "workflow_node_id": "J19",
+            "job_type": "homo_refine_new",
+            "parameter_template": {
+                "refine_do_marg": {"type": "boolean", "default": False},
+                "compute_use_ssd": {"type": "boolean", "default": False},
+                "refine_symmetry": {"type": "string", "default": "D7"},
+            },
+            "default_parameters": {
+                "refine_do_marg": 0,
+                "compute_use_ssd": 1,
+                "refine_symmetry": "D7",
+            },
+        }]
+        decision = {
+            "decision_type": "forward",
+            "action": "homo_refine_new",
+            "parameters": {},
+        }
+        result = adapt_v2_decision_to_internal(decision, candidates)
+        self.assertTrue(result["success"])
+        params = result["internal_decision"]["selected_actions"][0]["parameters"]
+        self.assertIs(params["refine_do_marg"], False)
+        self.assertIs(params["compute_use_ssd"], True)
+
+    def test_explicit_integer_boolean_remains_invalid(self):
+        candidates = [{
+            "action_id": "forward_J19",
+            "action_type": "forward",
+            "workflow_node_id": "J19",
+            "job_type": "homo_refine_new",
+            "parameter_template": {"refine_do_marg": {"type": "boolean"}},
+            "default_parameters": {},
+        }]
+        decision = {
+            "decision_type": "forward",
+            "action": "homo_refine_new",
+            "parameters": {"refine_do_marg": 1},
+        }
+        result = adapt_v2_decision_to_internal(decision, candidates)
+        self.assertTrue(result["success"])
+        params = result["internal_decision"]["selected_actions"][0]["parameters"]
+        self.assertEqual(params["refine_do_marg"], 1)
+        self.assertIs(type(params["refine_do_marg"]), int)
+        issues, _ = validate_parameters(
+            params,
+            candidates[0]["parameter_template"],
+            path="parameters",
+        )
+        self.assertTrue(any(item.code == "parameter_type_mismatch" for item in issues))
 
 
 if __name__ == "__main__":

@@ -81,6 +81,7 @@ def available_output_sources(
                 "source_logical_node_id": node["logical_node_id"],
                 "source_job_uid": node["cryosparc_job_uid"],
                 "source_output": output_name,
+                "num_items": output.get("num_items") or 0,
                 "result_names": output.get("result_names") or [],
                 "source_job_type": node["job_type"],
             })
@@ -130,10 +131,23 @@ def select_preferred_source(
     not the population intended for the next reconstruction stage. Keep them
     as a fallback for jobs that have no primary particle source available.
     """
-    if input_name != "particles":
-        return matches[-1]
-    primary = [source for source in matches if not is_excluded_particle_output(source)]
-    return (primary or matches)[-1]
+    primary = [source for source in matches if not is_excluded_data_output(source)]
+    return max(
+        primary or matches,
+        key=lambda source: (
+            _job_uid_number(source.get("source_job_uid")),
+            int(source.get("num_items") or 0),
+        ),
+    )
+
+
+def is_excluded_data_output(source: Dict[str, Any]) -> bool:
+    """Exclude incomplete/rejected side outputs when a primary output exists."""
+    output_name = str(source.get("source_output") or "").lower()
+    return any(
+        token in output_name
+        for token in ("_incomplete", "_failed", "_rejected", "_unused")
+    )
 
 
 def is_excluded_particle_output(source: Dict[str, Any]) -> bool:
@@ -157,7 +171,15 @@ def source_matches_input(
 ) -> bool:
     """Check type and required result slots without guessing missing data."""
     source_type = infer_source_type(source)
-    if expected_type and source_type and expected_type != source_type:
+    # CryoSPARC uses the broad ``exposure`` dtype for both movie and
+    # micrograph inputs. Required result slots still distinguish them: a
+    # movie can satisfy Motion Correction, but not CTF estimation.
+    movie_exposure = (
+        expected_type == "exposure"
+        and source_type == "movie"
+        and "movie_blob" in required_slots
+    )
+    if expected_type and source_type and expected_type != source_type and not movie_exposure:
         return False
     return required_slots.issubset(set(source.get("result_names") or []))
 
@@ -166,7 +188,7 @@ def infer_source_type(source: Dict[str, Any]) -> Optional[str]:
     """Infer the Registry data type from normalized output names/results."""
     names = set(source.get("result_names") or [])
     output_name = source.get("source_output", "")
-    if "micrograph_blob" in names or "mscope_params" in names:
+    if "micrograph_blob" in names or "micrograph_blob_non_dw" in names:
         return "exposure"
     if "movie_blob" in names:
         return "movie"
@@ -183,7 +205,7 @@ def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]
     """Expose Registry types, defaults, enums, and numeric constraints."""
     template = {}
     for name, param in getattr(registry_spec, "params", {}).items():
-        if getattr(param, "hidden", False):
+        if getattr(param, "hidden", False) and registry_spec.type != "inspect_picks_v2":
             continue
         value_type = registry_param_type(param)
         item = {"type": value_type}
@@ -227,6 +249,11 @@ def build_registry_candidate(
     tags = set(getattr(registry_spec, "tags", []) or [])
     requires_gpu = "gpuEnabled" in tags
     interactive = bool(getattr(registry_spec, "interactive", False))
+    requires_approval = interactive
+    # Inspect Picks has an automatic threshold mode in this agent.
+    if job_type == "inspect_picks_v2":
+        interactive = local_spec["interactive"]
+        requires_approval = local_spec["requires_approval"]
     default_lane = os.getenv("CRYOAGENT_GPU_LANE", DEFAULT_GPU_LANE) if requires_gpu else None
     return {
         "action_id": f"registry_{current_node['cryosparc_job_uid']}_{job_type}",
@@ -253,7 +280,7 @@ def build_registry_candidate(
             "category": getattr(registry_spec, "category", None) or local_spec["category"],
             "requires_gpu": requires_gpu,
             "multi_gpu": "multiGpu" in tags,
-            "requires_approval": interactive,
+            "requires_approval": requires_approval,
             "interactive": interactive,
             "default_lane": default_lane,
             "max_auto_gpus": local_spec["max_auto_gpus"],

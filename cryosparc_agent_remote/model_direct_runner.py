@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from urllib import error, request
 from typing import Any, Dict, List, Optional
 
@@ -13,7 +14,10 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def build_workflow_decision_prompt(model_input: Dict[str, Any]) -> List[Dict[str, str]]:
+def build_workflow_decision_prompt(
+    model_input: Dict[str, Any],
+    visual_context: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Build chat messages for the direct model closed-loop test."""
     output_contract = {
         "schema_version": "2.0",
@@ -75,10 +79,35 @@ def build_workflow_decision_prompt(model_input: Dict[str, Any]) -> List[Dict[str
             },
         ],
     }
-    return [
+    messages: List[Dict[str, Any]] = [
         {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
     ]
+    if visual_context:
+        visual_text = {
+            "visual_instruction": (
+                "The attached image is a class-average contact sheet. Each tile is labelled "
+                "class_id=<integer>. Inspect particle quality, structural consistency, "
+                "noise, and view diversity. Use the labels exactly in selected_templates."
+            ),
+            "visual_context": {
+                key: value for key, value in visual_context.items()
+                if key != "contact_sheet"
+            },
+        }
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": json.dumps(visual_text, ensure_ascii=False)},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": visual_context["contact_sheet"]["data_url"],
+                    },
+                },
+            ],
+        })
+    return messages
 
 
 def render_chat_prompt(tokenizer: Any, messages: List[Dict[str, str]]) -> str:
@@ -160,6 +189,10 @@ def run_openai_compatible_model(
     timeout_seconds: int = 300,
     max_retries: int = 3,
     retry_backoff_seconds: float = 2.0,
+    prompt_cache_key: Optional[str] = None,
+    prompt_cache_options: Optional[Dict[str, Any]] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Call an OpenAI-compatible endpoint with bounded transient-error retries."""
     if not api_base:
@@ -175,6 +208,14 @@ def run_openai_compatible_model(
         "temperature": temperature,
         "max_tokens": max_new_tokens,
     }
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
+    if prompt_cache_options:
+        payload["prompt_cache_options"] = prompt_cache_options
+    if tools:
+        payload["tools"] = tools
+    if tool_choice:
+        payload["tool_choice"] = tool_choice
     endpoint = api_base.rstrip("/") + "/chat/completions"
     body = json.dumps(payload).encode("utf-8")
     req = request.Request(
@@ -210,18 +251,21 @@ def run_openai_compatible_model(
 
     parsed = json.loads(raw_response)
     try:
-        content = parsed["choices"][0]["message"]["content"]
+        message = parsed["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError(
-            "OpenAI-compatible response did not contain choices[0].message.content."
+            "OpenAI-compatible response did not contain choices[0].message."
         ) from exc
 
-    raw_text = normalize_message_content(content)
+    content = message.get("content")
+    raw_text = normalize_message_content(content) if content is not None else ""
     return {
         "endpoint": endpoint,
         "request_payload": payload,
         "raw_response": parsed,
         "raw_text": raw_text,
+        "assistant_message": message,
+        "tool_calls": message.get("tool_calls") or [],
         "attempts": attempts,
     }
 
@@ -230,14 +274,30 @@ def resolve_api_key(
     explicit_api_key: Optional[str] = None,
     api_key_env: str = "OPENAI_API_KEY",
 ) -> str:
-    """Resolve an API key from an explicit value or an environment variable."""
+    """Resolve an API key without requiring secrets in project files or argv."""
     if explicit_api_key and explicit_api_key.strip():
         return explicit_api_key.strip()
     env_value = os.environ.get(api_key_env, "").strip()
     if env_value:
         return env_value
+    env_file = Path(
+        os.getenv("CRYOAGENT_API_ENV_FILE", "~/.config/cryoagent/api.env")
+    ).expanduser()
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped[7:].lstrip()
+            name, separator, value = stripped.partition("=")
+            if separator and name.strip() == api_key_env:
+                value = value.strip().strip("\"'")
+                if value:
+                    return value
     raise ValueError(
-        f"API key not provided. Set --api-key or export {api_key_env}."
+        f"API key not provided. Set --api-key, export {api_key_env}, "
+        f"or configure {env_file}."
     )
 
 

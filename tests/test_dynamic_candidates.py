@@ -7,8 +7,28 @@ from dynamic_candidates import (
     resolve_registry_connections,
 )
 
-
 class DynamicCandidateTests(unittest.TestCase):
+    def test_inspect_picks_uses_local_automatic_policy(self):
+        from dynamic_candidates import build_registry_candidate
+        from job_specs import get_job_spec
+
+        class Param:
+            def __init__(self, default=None):
+                self.default = default
+
+        class RegistrySpec:
+            type = "inspect_picks_v2"
+            category = "particle_picking"
+            tags = ["interactive"]
+            interactive = True
+            title = "Inspect Particle Picks"
+            params = {"n_mic_to_plot": Param(10)}
+
+        node = {"cryosparc_job_uid": "J1", "workflow_node_id": "J1"}
+        action = build_registry_candidate(node, RegistrySpec(), {"particles": []})
+        self.assertFalse(action["job_spec_metadata"]["interactive"])
+        self.assertFalse(action["job_spec_metadata"]["requires_approval"])
+
     def test_registry_parameter_types_and_constraints_are_preserved(self):
         spec = SimpleNamespace(
             type="blob_picker_gpu",
@@ -84,6 +104,39 @@ class DynamicCandidateTests(unittest.TestCase):
         sources = [{"source_job_uid": "J9", "source_output": "particles_rejected", "result_names": ["blob"]}]
         connections = resolve_registry_connections(spec, sources)
         self.assertEqual(connections["particles"][0]["source_output"], "particles_rejected")
+
+    def test_movie_output_with_mscope_is_not_ctf_exposure(self):
+        spec = SimpleNamespace(
+            type="patch_ctf_estimation_multi",
+            inputs=SimpleNamespace(root={
+                "exposures": SimpleNamespace(
+                    type="exposure", slots=["micrograph_blob", "mscope_params"], count_min=1,
+                ),
+            }),
+        )
+        sources = [{
+            "source_job_uid": "J94", "source_output": "imported_movies", "num_items": 3657,
+            "result_names": ["movie_blob", "mscope_params"],
+        }]
+        self.assertIsNone(resolve_registry_connections(spec, sources))
+
+    def test_primary_exposure_output_is_preferred_over_incomplete_branch(self):
+        spec = SimpleNamespace(
+            type="patch_ctf_estimation_multi",
+            inputs=SimpleNamespace(root={
+                "exposures": SimpleNamespace(
+                    type="exposure", slots=["micrograph_blob", "mscope_params"], count_min=1,
+                ),
+            }),
+        )
+        sources = [
+            {"source_job_uid": "J95", "source_output": "micrographs", "num_items": 3656,
+             "result_names": ["micrograph_blob", "mscope_params"]},
+            {"source_job_uid": "J95", "source_output": "micrographs_incomplete", "num_items": 1,
+             "result_names": ["micrograph_blob", "mscope_params"]},
+        ]
+        connections = resolve_registry_connections(spec, sources)
+        self.assertEqual(connections["exposures"][0]["source_output"], "micrographs")
 
     def test_registry_gpu_metadata_is_executable(self):
         spec = SimpleNamespace(

@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest import mock
 
-from cryosparc_client import ensure_cryosparc_no_proxy
+from cryosparc_agent_remote.cryosparc_client import ensure_cryosparc_no_proxy
 
 
 class TestCryoSPARCClientProxyBypass(unittest.TestCase):
