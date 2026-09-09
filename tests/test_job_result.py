@@ -180,6 +180,50 @@ class JobResultPackageTests(unittest.TestCase):
         )
         self.assertIn("RuntimeError", result["failure_context"]["run_errors"]["raw"])
 
+    def test_physical_race_loser_returns_completed_sibling_result(self):
+        state = workflow_state("killed", job_type="homo_abinit")
+        loser = state["nodes"][0]
+        loser["cryosparc_job_uid"] = "J230"
+        loser["workflow_node_id"] = "J230"
+        loser["title"] = "Agent registry_J229_homo_abinit physical_1"
+        loser["status"] = "killed"
+        winner = {
+            **loser,
+            "cryosparc_job_uid": "J231",
+            "workflow_node_id": "J231",
+            "title": "Agent registry_J229_homo_abinit physical_2",
+            "status": "completed",
+            "has_error": False,
+            "run_errors": {},
+            "outputs": {
+                "volume": {
+                    "type": "volume",
+                    "num_items": 1,
+                    "available": True,
+                    "result_names": ["map"],
+                    "summary_keys": ["map/res_A"],
+                    "latest_summary_stat_keys": ["map/res_A"],
+                }
+            },
+        }
+        state["nodes"].append(winner)
+        state["node_mapping"]["J230"] = "J230"
+        state["node_mapping"]["J231"] = "J231"
+
+        with patch(
+            "job_result.extract_workflow_state",
+            return_value=state,
+        ), patch(
+            "job_result.get_next_candidate_context",
+            return_value={"candidate_actions": [], "blocked_actions": [], "decision_hint": None},
+        ):
+            result = get_job_result_package("P2", "W3", "J230")
+
+        self.assertTrue(result["ready_for_model"])
+        self.assertEqual(result["job_uid"], "J231")
+        self.assertEqual(result["race_resolution"]["requested_job_uid"], "J230")
+        self.assertEqual(result["race_resolution"]["winner_job_uid"], "J231")
+
 
 if __name__ == "__main__":
     unittest.main()

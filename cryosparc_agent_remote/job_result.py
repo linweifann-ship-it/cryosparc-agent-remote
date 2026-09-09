@@ -1,4 +1,5 @@
 # Builds model-facing CryoSPARC job result packages after execution finishes.
+import re
 from datetime import datetime, timezone
 from time import monotonic, sleep
 from typing import Any
@@ -41,6 +42,21 @@ def get_job_result_package(
             ],
         }
 
+    race_winner = find_completed_race_sibling(workflow_state, node)
+    if race_winner is not None:
+        package = build_model_result_package(
+            workflow_state,
+            race_winner,
+            include_next_candidates=include_next_candidates,
+        )
+        package["race_resolution"] = {
+            "requested_job_uid": node["cryosparc_job_uid"],
+            "winner_job_uid": race_winner["cryosparc_job_uid"],
+            "physical_execution_redundancy": "race",
+            "reason": "requested_job_is_physical_loser",
+        }
+        return package
+
     if node["status"] in TERMINAL_STATUSES:
         return build_model_result_package(
             workflow_state,
@@ -49,6 +65,32 @@ def get_job_result_package(
         )
 
     return build_internal_status_package(workflow_state, node)
+
+
+def find_completed_race_sibling(
+    workflow_state: dict[str, Any],
+    node: dict[str, Any],
+) -> dict[str, Any] | None:
+    title = node.get("title") or ""
+    match = re.match(r"^(?P<prefix>.+) physical_(?P<index>\d+)$", title)
+    if not match:
+        return None
+    prefix = match.group("prefix")
+    candidates = []
+    for candidate in workflow_state.get("nodes", []):
+        if candidate is node:
+            continue
+        if candidate.get("job_type") != node.get("job_type"):
+            continue
+        candidate_title = candidate.get("title") or ""
+        if not candidate_title.startswith(f"{prefix} physical_"):
+            continue
+        candidates.append(candidate)
+    for status in ("completed",):
+        for candidate in candidates:
+            if candidate.get("status") == status:
+                return candidate
+    return None
 
 
 def wait_for_job_result_package(
