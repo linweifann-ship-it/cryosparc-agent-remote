@@ -13,6 +13,7 @@ from resource_scheduler import (
     make_logical_job_record,
     parse_sinfo_output,
     parse_squeue_output,
+    policy_for_job,
     probe_cluster_resources,
     reconcile_race_jobs,
     register_submission,
@@ -62,6 +63,24 @@ def planned_action(params=None):
 
 
 class ResourceSchedulerTests(unittest.TestCase):
+    def test_all_noninteractive_gpu_jobs_enable_race_policy(self):
+        policy = policy_for_job(
+            "patch_ctf_estimation_multi",
+            get_job_spec("patch_ctf_estimation_multi"),
+            {"compute_num_gpus": 1},
+        )
+
+        self.assertTrue(policy.race_mode)
+
+    def test_non_gpu_import_does_not_enable_race_policy(self):
+        policy = policy_for_job(
+            "import_micrographs",
+            get_job_spec("import_micrographs"),
+            {},
+        )
+
+        self.assertFalse(policy.race_mode)
+
     def test_idle_gpu_selects_preferred_lane(self):
         plan = build_scheduling_plan(
             "patch_motion_correction_multi",
@@ -70,6 +89,8 @@ class ResourceSchedulerTests(unittest.TestCase):
             resource_snapshot=snapshot(g4090_free=4, h20_free=8),
         )
 
+        self.assertTrue(plan["policy"]["race_mode"])
+        self.assertEqual(plan["race_lanes"], ["g8m192_4090_slurm", "h20_slurm"])
         self.assertEqual(plan["selected_lane"], "g8m192_4090_slurm")
         self.assertEqual(plan["selected_resource"]["free_gpus"], 4)
 

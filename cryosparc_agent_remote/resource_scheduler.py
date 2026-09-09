@@ -29,13 +29,6 @@ CPU_FALLBACK_CAPABILITIES = {
         "compute_num_cores": 32,
     },
 }
-RACE_MODE_JOB_TYPES = {
-    "homo_refine_new",
-    "heterogeneous_refinement",
-    "nonuniform_refine_new",
-}
-
-
 @dataclass(frozen=True)
 class ResourceLane:
     partition: str
@@ -90,7 +83,7 @@ def policy_for_job(
     min_gpus = int(gpu_rule.get("minimum") or 1)
     return SchedulingPolicy(
         cpu_fallback=job_type in CPU_FALLBACK_CAPABILITIES,
-        race_mode=job_type in RACE_MODE_JOB_TYPES,
+        race_mode=bool(spec.get("requires_gpu") and not spec.get("interactive")),
         preferred_lanes=tuple(preferred),
         compatible_lanes=tuple(preferred),
         minimum_gpus=min_gpus,
@@ -326,12 +319,18 @@ def build_scheduling_plan(
         "policy": policy_to_dict(policy),
         "snapshot": snapshot,
         "selected_lane": selected_lane,
+        "race_lanes": race_lanes_for_policy(policy) if policy.race_mode else [],
         "selected_resource": selected,
         "resource_config": resource_config,
         "queue": queue,
         "parameter_overrides": {},
         "reason": reason,
     }
+
+
+def race_lanes_for_policy(policy: SchedulingPolicy) -> list[str]:
+    """Return physical lanes for redundant execution of one logical GPU step."""
+    return dedupe(list(policy.compatible_lanes))[:2]
 
 
 def select_gpu_lane(

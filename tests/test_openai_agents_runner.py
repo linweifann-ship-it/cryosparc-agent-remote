@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from cryosparc_agent_remote.openai_agents_runner import (
     AgentsRunConfig,
@@ -11,6 +12,8 @@ from cryosparc_agent_remote.openai_agents_runner import (
     contains_stop,
     extract_usage,
     extract_created_jobs,
+    kill_race_losers,
+    select_race_winner,
     summarize_prompt_cache,
 )
 
@@ -74,6 +77,89 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             extract_created_jobs(event),
             [{"project_uid": None, "workspace_uid": None, "job_uid": "J9", "job_type": "import_movies", "status": "queued", "queued": None}],
         )
+
+    def test_extract_created_jobs_collapses_race_physical_jobs_to_logical_step(self):
+        event = {
+            "new_items": [
+                {
+                    "output": {
+                        "success": True,
+                        "project_uid": "P2",
+                        "workspace_uid": "W16",
+                        "job_uid": "J217",
+                        "job_type": "patch_ctf_estimation_multi",
+                        "status": "queued",
+                        "queued": True,
+                        "logical_workflow_step": True,
+                        "logical_job": {
+                            "logical_job_id": "logical-abc",
+                            "logical_job_uid": "J217",
+                            "physical_job_ids": ["J217", "J218"],
+                            "winner_job_uid": None,
+                        },
+                        "diagnostics": {
+                            "physical_jobs": [
+                                {"job_uid": "J217", "resource_scheduling": {}},
+                                {"job_uid": "J218", "resource_scheduling": {}},
+                            ]
+                        },
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(
+            extract_created_jobs(event),
+            [
+                {
+                    "project_uid": "P2",
+                    "workspace_uid": "W16",
+                    "job_uid": "J217",
+                    "job_type": "patch_ctf_estimation_multi",
+                    "status": "queued",
+                    "queued": True,
+                    "logical_workflow_step": True,
+                    "logical_job_id": "logical-abc",
+                    "physical_job_ids": ["J217", "J218"],
+                    "winner_job_uid": None,
+                }
+            ],
+        )
+
+    def test_select_race_winner_prefers_running_h20_over_queued_4090(self):
+        self.assertEqual(
+            select_race_winner({"J220": "launched", "J221": "running"}),
+            "J221",
+        )
+
+    def test_kill_race_losers_kills_non_running_loser_when_winner_running(self):
+        with patch(
+            "cryosparc_agent_remote.openai_agents_runner.kill_job",
+            return_value={"job_uid": "J220", "action": "kill", "success": True},
+        ) as kill:
+            result = kill_race_losers(
+                "P2",
+                "W16",
+                "J221",
+                {"J220": "launched", "J221": "running"},
+            )
+
+        kill.assert_called_once_with("P2", "W16", "J220", "launched")
+        self.assertEqual(result[0]["job_uid"], "J220")
+
+    def test_kill_race_losers_does_not_kill_running_loser(self):
+        with patch(
+            "cryosparc_agent_remote.openai_agents_runner.kill_job",
+        ) as kill:
+            result = kill_race_losers(
+                "P2",
+                "W16",
+                "J221",
+                {"J220": "running", "J221": "running"},
+            )
+
+        kill.assert_not_called()
+        self.assertEqual(result, [])
 
     def test_summarize_prompt_cache_accepts_responses_and_chat_usage(self):
         summary = summarize_prompt_cache([

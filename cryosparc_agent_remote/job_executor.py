@@ -1,5 +1,6 @@
 # Plans and eventually executes CryoSPARC jobs through a generic job API adapter.
 import os
+from time import monotonic, sleep
 from typing import Any
 
 from cryosparc_client import cryosparc_client
@@ -220,6 +221,14 @@ def execute_job_action(
         planned_action=planned_action,
         params=params,
     )
+    if should_race_submit(planned_action):
+        return execute_race_job_action(
+            project_uid=project_uid,
+            workspace_uid=workspace_uid,
+            planned_action=planned_action,
+            params=params,
+            logical_record=logical_record,
+        )
     job = None
     execution_phase = "create_job"
     try:
@@ -312,6 +321,257 @@ def execute_job_action(
                 "effective_parameters": params,
             },
         }
+
+
+def should_race_submit(planned_action: dict[str, Any]) -> bool:
+    scheduling = planned_action.get("resource_scheduling") or {}
+    policy = scheduling.get("policy") or {}
+    queue = planned_action.get("queue") or {}
+    race_lanes = scheduling.get("race_lanes") or []
+    return bool(policy.get("race_mode") and queue.get("will_queue") and len(race_lanes) > 1)
+
+
+def execute_race_job_action(
+    project_uid: str,
+    workspace_uid: str,
+    planned_action: dict[str, Any],
+    params: dict[str, Any],
+    logical_record: Any,
+) -> dict[str, Any]:
+    """Submit one logical GPU step redundantly to multiple physical lanes."""
+    scheduling = planned_action["resource_scheduling"]
+    physical_jobs = []
+    execution_phase = "create_race_jobs"
+    try:
+        cs = cryosparc_client()
+        workspace = cs.find_workspace(project_uid, workspace_uid)
+        for index, lane in enumerate(scheduling["race_lanes"], 1):
+            lane_scheduling = refresh_scheduling_plan({
+                **planned_action,
+                "queue": {**planned_action["queue"], "lane": lane},
+                "resource_scheduling": scheduling,
+            })
+            lane_queue = lane_scheduling["queue"]
+            lane_action = {
+                **planned_action,
+                "queue": lane_queue,
+                "resource_scheduling": lane_scheduling,
+            }
+            payload = build_cryosparc_payload(
+                project_uid=project_uid,
+                workspace_uid=workspace_uid,
+                planned_action=lane_action,
+                params=params,
+            )
+            job = workspace.create_job(
+                payload["create_job"]["job_type"],
+                connections=payload["create_job"]["connections"],
+                params=payload["create_job"]["params"],
+                title=f"{payload['create_job']['title']} physical_{index}",
+                desc=payload["create_job"]["desc"],
+            )
+            execution_phase = f"queue_race_job_{index}"
+            job.queue(
+                lane=lane_queue["lane"],
+                hostname=lane_queue["hostname"],
+                gpus=lane_queue["gpus"],
+                cluster_vars=lane_queue["cluster_vars"],
+            )
+            register_submission(
+                logical_record,
+                job.uid,
+                lane_scheduling["resource_config"],
+                lane_scheduling["snapshot"],
+                lane_scheduling["reason"],
+            )
+            physical_jobs.append({
+                "job_uid": job.uid,
+                "job_type": planned_action["job_type"],
+                "status": "queued",
+                "queued": True,
+                "lane": lane_queue["lane"],
+                "resource_scheduling": lane_scheduling,
+            })
+        race_result = wait_for_race_winner_and_kill_losers(
+            workspace,
+            [job["job_uid"] for job in physical_jobs],
+            poll_interval_seconds=int(
+                (scheduling.get("policy") or {}).get(
+                    "race_poll_interval_seconds",
+                    20,
+                )
+            ),
+            timeout_seconds=int(
+                (scheduling.get("policy") or {}).get(
+                    "queue_start_timeout_seconds",
+                    600,
+                )
+            ),
+        )
+        logical_job = {
+            "logical_job_id": logical_record.logical_job_id,
+            "logical_job_uid": race_result.get("winner_job_uid")
+            or (physical_jobs[0]["job_uid"] if physical_jobs else None),
+            "physical_job_ids": [job["job_uid"] for job in physical_jobs],
+            "physical_jobs": physical_jobs,
+            "winner_job_uid": race_result.get("winner_job_uid"),
+            "cancellations": race_result.get("cancellations", []),
+            "race_statuses": race_result.get("statuses", {}),
+        }
+        return {
+            "success": True,
+            "dry_run": False,
+            "status": "queued",
+            "project_uid": project_uid,
+            "workspace_uid": workspace_uid,
+            "job_uid": logical_job["logical_job_uid"],
+            "job_type": planned_action["job_type"],
+            "queued": True,
+            "logical_workflow_step": True,
+            "physical_execution_redundancy": "race",
+            "logical_job": logical_job,
+            "approval_required": planned_action["approval_required"],
+            "approval_reasons": planned_action.get("approval_reasons", []),
+            "approval_required_bypassed_for_creation": False,
+            "human_action_required": bool(planned_action["approval_required"]),
+            "planned_action": planned_action,
+            "diagnostics": {
+                "execution_phase": "completed",
+                "physical_jobs": physical_jobs,
+                "race_reconciliation": race_result,
+                "http_response": None,
+            },
+            "resource_scheduling": {
+                "logical_job": logical_record.__dict__,
+                "effective_parameters": params,
+            },
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "dry_run": False,
+            "status": "failed",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "project_uid": project_uid,
+            "workspace_uid": workspace_uid,
+            "job_uid": physical_jobs[0]["job_uid"] if physical_jobs else None,
+            "job_type": planned_action["job_type"],
+            "queued": False,
+            "logical_workflow_step": True,
+            "physical_execution_redundancy": "race",
+            "physical_jobs": physical_jobs,
+            "planned_action": planned_action,
+            "diagnostics": {
+                "execution_phase": execution_phase,
+                "physical_jobs": physical_jobs,
+                "http_response": extract_http_response(exc),
+            },
+            "issues": [
+                {
+                    "severity": "error",
+                    "code": "cryosparc_race_execution_error",
+                    "message": str(exc),
+                    "path": "cryoSPARC",
+                }
+            ],
+            "resource_scheduling": {
+                "logical_job": logical_record.__dict__,
+                "effective_parameters": params,
+            },
+        }
+
+
+def wait_for_race_winner_and_kill_losers(
+    workspace: Any,
+    job_uids: list[str],
+    poll_interval_seconds: int,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    deadline = monotonic() + max(timeout_seconds, 0)
+    poll_count = 0
+    while True:
+        poll_count += 1
+        jobs_by_uid = {job.uid: job for job in workspace.find_jobs()}
+        statuses = {
+            job_uid: str(getattr(jobs_by_uid.get(job_uid), "status", "not_found"))
+            for job_uid in job_uids
+        }
+        winner = select_race_winner(statuses)
+        if winner:
+            cancellations = kill_non_running_race_losers(
+                jobs_by_uid,
+                winner,
+                statuses,
+            )
+            return {
+                "winner_job_uid": winner,
+                "statuses": statuses,
+                "cancellations": cancellations,
+                "poll_count": poll_count,
+            }
+        if timeout_seconds <= 0 or monotonic() >= deadline:
+            return {
+                "winner_job_uid": None,
+                "statuses": statuses,
+                "cancellations": [],
+                "poll_count": poll_count,
+                "timed_out": True,
+            }
+        sleep(max(poll_interval_seconds, 1))
+
+
+def select_race_winner(statuses: dict[str, str]) -> str | None:
+    normalized = {
+        job_uid: str(status or "").lower()
+        for job_uid, status in statuses.items()
+    }
+    for target_status in ("completed", "running", "started"):
+        for job_uid, status in normalized.items():
+            if status == target_status:
+                return job_uid
+    return None
+
+
+def kill_non_running_race_losers(
+    jobs_by_uid: dict[str, Any],
+    winner_job_uid: str,
+    statuses: dict[str, str],
+) -> list[dict[str, Any]]:
+    keep_statuses = {"completed", "running", "started", "failed", "killed"}
+    results = []
+    for job_uid, raw_status in statuses.items():
+        status = str(raw_status or "").lower()
+        if job_uid == winner_job_uid or status in keep_statuses:
+            continue
+        job = jobs_by_uid.get(job_uid)
+        if job is None:
+            results.append({
+                "job_uid": job_uid,
+                "previous_status": status,
+                "action": "kill",
+                "success": False,
+                "error": "job_not_found",
+            })
+            continue
+        try:
+            job.kill()
+            results.append({
+                "job_uid": job_uid,
+                "previous_status": status,
+                "action": "kill",
+                "success": True,
+            })
+        except Exception as exc:
+            results.append({
+                "job_uid": job_uid,
+                "previous_status": status,
+                "action": "kill",
+                "success": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            })
+    return results
 
 
 def refresh_scheduling_plan(planned_action: dict[str, Any]) -> dict[str, Any]:

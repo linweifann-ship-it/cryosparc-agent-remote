@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 
@@ -247,6 +248,13 @@ async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
             for job in created_jobs:
                 current_node = job.get("job_uid") or current_node
                 write_jsonl(config.output_dir / "jobs.jsonl", {"step": step, **job})
+                race_winner = wait_for_race_winner_if_needed(config, job)
+                if race_winner:
+                    current_node = race_winner["winner_job_uid"]
+                    write_jsonl(
+                        config.output_dir / "jobs.jsonl",
+                        {"step": step, "event": "race_winner_selected", **race_winner},
+                    )
 
             observations = extract_observations(event)
             for observation in observations:
@@ -438,7 +446,30 @@ def append_tool_events(output_dir: Path, step: int, event: dict[str, Any]) -> No
 def extract_created_jobs(event: dict[str, Any]) -> list[dict[str, Any]]:
     jobs = []
     for item in walk(event):
-        if isinstance(item, dict) and item.get("job_uid"):
+        if isinstance(item, dict) and item.get("logical_workflow_step") and item.get("logical_job"):
+            logical = item["logical_job"]
+            jobs.append({
+                "project_uid": item.get("project_uid"),
+                "workspace_uid": item.get("workspace_uid"),
+                "job_uid": logical.get("logical_job_uid") or item.get("job_uid"),
+                "job_type": item.get("job_type"),
+                "status": item.get("status"),
+                "queued": item.get("queued"),
+                "logical_workflow_step": True,
+                "logical_job_id": logical.get("logical_job_id"),
+                "physical_job_ids": logical.get("physical_job_ids") or [],
+                "winner_job_uid": logical.get("winner_job_uid"),
+            })
+        elif (
+            isinstance(item, dict)
+            and item.get("job_uid")
+            and item.get("job_type")
+            and not (
+                item.get("resource_scheduling")
+                and not item.get("project_uid")
+                and not item.get("workspace_uid")
+            )
+        ):
             jobs.append({
                 "project_uid": item.get("project_uid"),
                 "workspace_uid": item.get("workspace_uid"),
@@ -456,6 +487,133 @@ def extract_created_jobs(event: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(key)
         unique.append(job)
     return unique
+
+
+def wait_for_race_winner_if_needed(
+    config: AgentsRunConfig,
+    job: dict[str, Any],
+) -> dict[str, Any] | None:
+    physical_job_ids = job.get("physical_job_ids") or []
+    if not job.get("logical_workflow_step") or len(physical_job_ids) < 2:
+        return None
+    deadline = monotonic() + max(config.wait_timeout_seconds, 0)
+    poll_count = 0
+    while True:
+        poll_count += 1
+        statuses = read_job_statuses(
+            config.project_uid,
+            config.workspace_uid,
+            physical_job_ids,
+        )
+        winner = select_race_winner(statuses)
+        if winner:
+            cancellations = kill_race_losers(
+                config.project_uid,
+                config.workspace_uid,
+                winner,
+                statuses,
+            )
+            return {
+                "logical_job_id": job.get("logical_job_id"),
+                "logical_job_uid": job.get("job_uid"),
+                "physical_job_ids": physical_job_ids,
+                "winner_job_uid": winner,
+                "statuses": statuses,
+                "cancellations": cancellations,
+                "poll_count": poll_count,
+            }
+        if config.wait_timeout_seconds <= 0 or monotonic() >= deadline:
+            return {
+                "logical_job_id": job.get("logical_job_id"),
+                "logical_job_uid": job.get("job_uid"),
+                "physical_job_ids": physical_job_ids,
+                "winner_job_uid": job.get("job_uid"),
+                "statuses": statuses,
+                "poll_count": poll_count,
+                "timed_out": True,
+            }
+        sleep(max(config.poll_interval_seconds, 1))
+
+
+def read_job_statuses(
+    project_uid: str,
+    workspace_uid: str,
+    job_uids: list[str],
+) -> dict[str, str]:
+    from workflow_state import extract_workflow_state, find_node
+
+    workflow_state = extract_workflow_state(project_uid, workspace_uid)
+    statuses = {}
+    for job_uid in job_uids:
+        node = find_node(workflow_state, job_uid)
+        statuses[job_uid] = node["status"] if node else "not_found"
+    return statuses
+
+
+def select_race_winner(statuses: dict[str, str]) -> str | None:
+    normalized = {
+        job_uid: str(status or "").lower()
+        for job_uid, status in statuses.items()
+    }
+    for target_status in ("completed", "running", "started", "failed", "killed"):
+        for job_uid, status in normalized.items():
+            if status == target_status:
+                return job_uid
+    return None
+
+
+def kill_race_losers(
+    project_uid: str,
+    workspace_uid: str,
+    winner_job_uid: str,
+    statuses: dict[str, str],
+) -> list[dict[str, Any]]:
+    terminal_or_running = {"completed", "running", "started", "failed", "killed"}
+    results = []
+    for job_uid, raw_status in statuses.items():
+        status = str(raw_status or "").lower()
+        if job_uid == winner_job_uid or status in terminal_or_running:
+            continue
+        results.append(kill_job(project_uid, workspace_uid, job_uid, status))
+    return results
+
+
+def kill_job(
+    project_uid: str,
+    workspace_uid: str,
+    job_uid: str,
+    status: str,
+) -> dict[str, Any]:
+    from cryosparc_client import cryosparc_client
+
+    try:
+        cs = cryosparc_client()
+        workspace = cs.find_workspace(project_uid, workspace_uid)
+        for job in workspace.find_jobs():
+            if job.uid == job_uid:
+                job.kill()
+                return {
+                    "job_uid": job_uid,
+                    "previous_status": status,
+                    "action": "kill",
+                    "success": True,
+                }
+        return {
+            "job_uid": job_uid,
+            "previous_status": status,
+            "action": "kill",
+            "success": False,
+            "error": "job_not_found",
+        }
+    except Exception as exc:
+        return {
+            "job_uid": job_uid,
+            "previous_status": status,
+            "action": "kill",
+            "success": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
 
 
 def extract_observations(event: dict[str, Any]) -> list[dict[str, Any]]:
