@@ -18,6 +18,7 @@ from dynamic_candidates import build_registry_next_actions
 from workflow_policy import annotate_candidates, infer_current_stage, POLICY_VERSION
 from quality_policy import assess_node, build_retry_candidate
 from workflow_state import content_hash, extract_workflow_state, find_node
+from dataset_info import normalize_dataset_info
 
 
 REGISTRY_VERSION = "workflow_v1"
@@ -88,6 +89,7 @@ def build_initial_import_candidates(
     dataset_info: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Build import candidates from explicit dataset file facts at startup."""
+    dataset_info = normalize_dataset_info(dataset_info)
     files = dataset_info.get("available_input_files") or {}
     facts = normalize_dataset_facts(dataset_info)
     candidates = []
@@ -130,6 +132,7 @@ def build_initial_import_candidates(
 
 def normalize_dataset_facts(dataset_info: dict[str, Any]) -> dict[str, Any]:
     """Map model-facing dataset facts to CryoSPARC import parameter names."""
+    dataset_info = normalize_dataset_info(dataset_info)
     facts = {
         "psize_A": dataset_info.get("psize_A", dataset_info.get("pixel_size_A")),
         "accel_kv": dataset_info.get(

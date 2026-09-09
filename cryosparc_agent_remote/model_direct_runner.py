@@ -162,6 +162,8 @@ def run_openai_compatible_model(
     retry_backoff_seconds: float = 2.0,
     prompt_cache_key: Optional[str] = None,
     prompt_cache_options: Optional[Dict[str, Any]] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Call an OpenAI-compatible endpoint with bounded transient-error retries."""
     if not api_base:
@@ -181,6 +183,10 @@ def run_openai_compatible_model(
         payload["prompt_cache_key"] = prompt_cache_key
     if prompt_cache_options:
         payload["prompt_cache_options"] = prompt_cache_options
+    if tools:
+        payload["tools"] = tools
+    if tool_choice:
+        payload["tool_choice"] = tool_choice
     endpoint = api_base.rstrip("/") + "/chat/completions"
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     req = request.Request(
@@ -216,18 +222,21 @@ def run_openai_compatible_model(
 
     parsed = json.loads(raw_response)
     try:
-        content = parsed["choices"][0]["message"]["content"]
+        message = parsed["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError(
-            "OpenAI-compatible response did not contain choices[0].message.content."
+            "OpenAI-compatible response did not contain choices[0].message."
         ) from exc
 
+    content = message.get("content")
     raw_text = normalize_message_content(content)
     return {
         "endpoint": endpoint,
         "request_payload": payload,
         "raw_response": parsed,
         "usage": extract_usage_summary(parsed),
+        "assistant_message": message,
+        "tool_calls": message.get("tool_calls") or [],
         "raw_text": raw_text,
         "attempts": attempts,
     }
@@ -281,6 +290,8 @@ def resolve_api_key(
 
 def normalize_message_content(content: Any) -> str:
     """Normalize OpenAI-compatible message content into plain text."""
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):

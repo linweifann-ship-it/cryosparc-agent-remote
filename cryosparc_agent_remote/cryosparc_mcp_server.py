@@ -24,9 +24,72 @@ from v2_decision_adapter import (
     execute_v2_model_decision_payload,
 )
 from workflow_state import extract_workflow_state
+from vision_inputs import (
+    build_class_average_visual_context,
+    build_pick_inspection_visual_context,
+)
+from kb_bridge import call_kb_tool, get_decision_context
+from cryosift_adapter import evaluate_2d_classes_with_cryosift as evaluate_2d_classes_with_cryosift_impl
 
 
 mcp = FastMCP("cryoSPARC Tools")
+
+
+# Read-only knowledge-base tools. They are prefixed to keep historical evidence
+# separate from live CryoSPARC execution tools.
+@mcp.tool()
+def kb_search_cryoem_kb(query: str, top_k: int = 5, kb_types: list[str] | None = None) -> dict:
+    return call_kb_tool("search_cryoem_kb", {"query": query, "top_k": top_k, "kb_types": kb_types})
+
+
+@mcp.tool()
+def kb_get_dataset_summary(dataset_id: str) -> dict:
+    return call_kb_tool("get_dataset_summary", {"dataset_id": dataset_id})
+
+
+@mcp.tool()
+def kb_get_workflow(dataset_id: str) -> dict:
+    return call_kb_tool("get_workflow", {"dataset_id": dataset_id})
+
+
+@mcp.tool()
+def kb_get_maps(dataset_id: str | None = None, multi_map: bool | str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_maps", {"dataset_id": dataset_id, "multi_map": multi_map, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_failures(failure_class: str | None = None, job_type: str | None = None, dataset_id: str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_failures", {"failure_class": failure_class, "job_type": job_type, "dataset_id": dataset_id, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_images(dataset_id: str | None = None, job_id: str | None = None, image_type: str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_images", {"dataset_id": dataset_id, "job_id": job_id, "image_type": image_type, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_find_similar_cases(input_type: str | None = None, molecule_type: str | None = None, multi_map: bool | str | None = None, top_k: int = 10) -> dict:
+    return call_kb_tool("find_similar_cases", {"input_type": input_type, "molecule_type": molecule_type, "multi_map": multi_map, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_next_steps(job_type: str, top_k: int = 10) -> dict:
+    return call_kb_tool("get_next_steps", {"job_type": job_type, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_job_doc(job_type: str | None = None, query: str | None = None, top_k: int = 10) -> dict:
+    return call_kb_tool("get_job_doc", {"job_type": job_type, "query": query, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_manual_annotations(annotation_type: str = "all", dataset_id: str | None = None, job_type: str | None = None, top_k: int = 20) -> dict:
+    return call_kb_tool("get_manual_annotations", {"annotation_type": annotation_type, "dataset_id": dataset_id, "job_type": job_type, "top_k": top_k})
+
+
+@mcp.tool()
+def kb_get_decision_context(dataset_info: dict | None = None, current_state: dict | None = None, candidate_actions: list[dict] | None = None, top_k: int = 5) -> dict:
+    return get_decision_context(dataset_info, current_state, candidate_actions, top_k)
 
 
 # Basic read-only health and environment tools.
@@ -140,6 +203,50 @@ def get_workflow_state(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
     )
+
+
+@mcp.tool()
+def get_class_average_visual_context(
+    project_uid: str,
+    job_uid: str,
+    max_classes: int = 50,
+) -> dict:
+    """Return a class-id-labelled contact sheet for a completed 2D job."""
+    return build_class_average_visual_context(
+        project_uid=project_uid,
+        job_uid=job_uid,
+        max_classes=max_classes,
+    )
+
+
+@mcp.tool()
+def get_pick_inspection_visual_context(
+    project_uid: str,
+    job_uid: str,
+    max_micrographs: int = 6,
+    max_picks_per_micrograph: int = 400,
+    micrograph_root: str | None = None,
+) -> dict:
+    """Return micrograph thumbnails with Blob Picker locations overlaid."""
+    return build_pick_inspection_visual_context(
+        project_uid=project_uid,
+        job_uid=job_uid,
+        max_micrographs=max_micrographs,
+        max_picks_per_micrograph=max_picks_per_micrograph,
+        micrograph_root=micrograph_root,
+    )
+
+
+@mcp.tool()
+def evaluate_2d_classes_with_cryosift(
+    project_uid: str,
+    job_uid: str,
+    threshold: float = 3.0,
+    output_dir: str | None = None,
+    timeout_seconds: int = 1800,
+) -> dict:
+    """Score completed Class 2D averages with optional CryoSift CNN."""
+    return evaluate_2d_classes_with_cryosift_impl(project_uid, job_uid, threshold, output_dir, timeout_seconds)
 
 
 @mcp.tool()

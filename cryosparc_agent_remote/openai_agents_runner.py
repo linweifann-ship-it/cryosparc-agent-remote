@@ -53,6 +53,7 @@ STATIC_OUTPUT_CONTRACT = {
 STATIC_MCP_PROTOCOL = {
     "required_mcp_sequence": [
         "get_workflow_decision_context",
+        "Optionally use kb_* tools, get_class_average_visual_context, get_pick_inspection_visual_context, or evaluate_2d_classes_with_cryosift when extra evidence is needed.",
         "validate_v2_model_decision when you have a candidate decision",
         "execute_v2_model_decision with dry_run=false for executable decisions",
         "wait_for_job_result_package for created jobs",
@@ -62,6 +63,7 @@ STATIC_MCP_PROTOCOL = {
         "Use forward for one evidence-supported next action, branch only for a meaningful scientific comparison, and stop when no safe justified action remains.",
         "selected_actions must contain only MCP-visible executable job types; parameters contain only non-default overrides.",
         "MCP validates source outputs, input compatibility, and execution. Do not claim a connection or job result not returned by MCP.",
+        "KB, visual, and CryoSift tools provide evidence only; final job creation, queuing, and stopping must still go through MCP validation and execution tools.",
         "For missing evidence or an unavailable safe action, obtain the relevant MCP state or stop; this v3 contract has no request_input or rollback decision type.",
     ],
     "interactive_qc_rules": {
@@ -79,6 +81,20 @@ STATIC_MCP_PROTOCOL = {
 
 CLOSED_LOOP_MCP_TOOLS = [
     "get_workflow_decision_context",
+    "kb_search_cryoem_kb",
+    "kb_get_dataset_summary",
+    "kb_get_workflow",
+    "kb_get_maps",
+    "kb_get_failures",
+    "kb_get_images",
+    "kb_find_similar_cases",
+    "kb_get_next_steps",
+    "kb_get_job_doc",
+    "kb_get_manual_annotations",
+    "kb_get_decision_context",
+    "get_class_average_visual_context",
+    "get_pick_inspection_visual_context",
+    "evaluate_2d_classes_with_cryosift",
     "validate_v2_model_decision",
     "execute_v2_model_decision",
     "wait_for_job_result_package",
