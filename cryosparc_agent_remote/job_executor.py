@@ -66,6 +66,7 @@ def plan_job_action(
         "approval_reasons": sorted(
             set(action.get("approval_reasons", []) + approval_reasons)
         ),
+        "job_spec_metadata": metadata,
         "rollback_target": action.get("rollback_target"),
         "status": "planned",
     }
@@ -245,15 +246,7 @@ def execute_job_action(
         queued = False
         if queue["will_queue"]:
             execution_phase = "queue_job"
-            if queue["lane"]:
-                job.queue(
-                    lane=queue["lane"],
-                    hostname=queue["hostname"],
-                    gpus=queue["gpus"],
-                    cluster_vars=queue["cluster_vars"],
-                )
-            else:
-                job.queue()
+            queue_job(job, planned_action)
             queued = True
         register_submission(
             logical_record,
@@ -371,12 +364,7 @@ def execute_race_job_action(
                 desc=payload["create_job"]["desc"],
             )
             execution_phase = f"queue_race_job_{index}"
-            job.queue(
-                lane=lane_queue["lane"],
-                hostname=lane_queue["hostname"],
-                gpus=lane_queue["gpus"],
-                cluster_vars=lane_queue["cluster_vars"],
-            )
+            queue_job(job, lane_action)
             register_submission(
                 logical_record,
                 job.uid,
@@ -628,12 +616,52 @@ def refresh_scheduling_plan(planned_action: dict[str, Any]) -> dict[str, Any]:
     existing = planned_action.get("resource_scheduling") or {}
     queue = planned_action.get("queue") or {}
     spec = get_job_spec(planned_action["job_type"])
+    metadata = planned_action.get("job_spec_metadata") or {}
+    if metadata:
+        spec.update({
+            key: value
+            for key, value in metadata.items()
+            if value is not None
+        })
     return build_scheduling_plan(
         job_type=planned_action["job_type"],
         spec=spec,
         params=planned_action["resolved_parameters"],
         requested_lane=queue.get("lane") or existing.get("selected_lane"),
         resource_snapshot=probe_cluster_resources(),
+    )
+
+
+def queue_job(job: Any, planned_action: dict[str, Any]) -> None:
+    queue = planned_action["queue"]
+    if should_auto_complete_select_2d(planned_action):
+        job.cs.api.jobs.enqueue(
+            job.project_uid,
+            job.uid,
+            lane=None,
+            hostname=None,
+            gpus=[],
+            no_check_inputs_ready=True,
+        )
+        job.refresh()
+        return
+    if queue["lane"]:
+        job.queue(
+            lane=queue["lane"],
+            hostname=queue["hostname"],
+            gpus=queue["gpus"],
+            cluster_vars=queue["cluster_vars"],
+        )
+    else:
+        job.queue()
+
+
+def should_auto_complete_select_2d(planned_action: dict[str, Any]) -> bool:
+    return (
+        planned_action.get("job_type") == "select_2D"
+        and bool((planned_action.get("resolved_parameters") or {}).get("selected_templates"))
+        and not planned_action.get("interactive")
+        and not planned_action.get("approval_required")
     )
 
 

@@ -12,6 +12,8 @@ from cryosparc_agent_remote.job_executor import (
     execute_job_action,
     extract_http_response,
     kill_non_running_race_losers,
+    queue_job,
+    refresh_scheduling_plan,
 )
 
 
@@ -208,6 +210,70 @@ class JobExecutorDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["job_uid"], "J225")
         self.assertEqual(result["method"], "cancel")
         self.assertTrue(result["success"])
+
+    def test_refresh_preserves_auto_select_2d_noninteractive_metadata(self):
+        planned_action = {
+            "job_type": "select_2D",
+            "resolved_parameters": {"selected_templates": "0,1,2"},
+            "queue": {
+                "will_queue": True,
+                "lane": None,
+                "hostname": None,
+                "gpus": [],
+                "cluster_vars": {},
+            },
+            "resource_scheduling": {},
+            "job_spec_metadata": {"interactive": False, "requires_approval": False},
+        }
+
+        with patch(
+            "cryosparc_agent_remote.job_executor.probe_cluster_resources",
+            return_value={"probe_source": "test"},
+        ):
+            result = refresh_scheduling_plan(planned_action)
+
+        self.assertTrue(result["queue"]["will_queue"])
+        self.assertEqual(result["queue"]["lane"], None)
+
+    def test_auto_select_2d_queues_with_no_check_inputs_ready(self):
+        calls = []
+
+        class FakeApiJobs:
+            def enqueue(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+        class FakeJob:
+            project_uid = "P2"
+            uid = "J229"
+
+            def __init__(self):
+                self.cs = SimpleNamespace(api=SimpleNamespace(jobs=FakeApiJobs()))
+                self.refreshed = False
+
+            def refresh(self):
+                self.refreshed = True
+
+        job = FakeJob()
+        queue_job(
+            job,
+            {
+                "job_type": "select_2D",
+                "interactive": False,
+                "approval_required": False,
+                "resolved_parameters": {"selected_templates": "0,1,2"},
+                "queue": {
+                    "will_queue": True,
+                    "lane": None,
+                    "hostname": None,
+                    "gpus": [],
+                    "cluster_vars": {},
+                },
+            },
+        )
+
+        self.assertEqual(calls[0][0], ("P2", "J229"))
+        self.assertTrue(calls[0][1]["no_check_inputs_ready"])
+        self.assertTrue(job.refreshed)
 
 
 if __name__ == "__main__":
