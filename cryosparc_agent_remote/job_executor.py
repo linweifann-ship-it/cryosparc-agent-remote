@@ -1,16 +1,9 @@
 # Plans and eventually executes CryoSPARC jobs through a generic job API adapter.
-import os
 from typing import Any
+import os
 
 from cryosparc_client import cryosparc_client
 from job_specs import get_job_spec
-from resource_scheduler import (
-    apply_resource_overrides,
-    build_scheduling_plan,
-    make_logical_job_record,
-    probe_cluster_resources,
-    register_submission,
-)
 
 
 def plan_job_action(
@@ -33,13 +26,7 @@ def plan_job_action(
         connections = build_connections(
             (candidate_action or {}).get("required_inputs", {})
         )
-    scheduling = build_scheduling_plan(
-        job_type=job_type,
-        spec=spec,
-        params=action["resolved_parameters"],
-        requested_lane=lane,
-    )
-    queue = scheduling["queue"]
+    queue = build_queue_plan(spec, lane)
     approval_reasons = approval_reasons_for(action, spec)
 
     return {
@@ -54,7 +41,6 @@ def plan_job_action(
         "connections": connections,
         "resolved_parameters": action["resolved_parameters"],
         "queue": queue,
-        "resource_scheduling": scheduling,
         "requires_gpu": spec["requires_gpu"],
         "interactive": spec["interactive"],
         "approval_required": bool(
@@ -203,39 +189,19 @@ def execute_job_action(
             ],
         }
 
-    scheduling = refresh_scheduling_plan(planned_action)
-    planned_action = {
-        **planned_action,
-        "queue": scheduling["queue"],
-        "resource_scheduling": scheduling,
-    }
-    params = apply_resource_overrides(
-        planned_action["resolved_parameters"],
-        scheduling.get("parameter_overrides") or {},
-    )
-    logical_record = make_logical_job_record(planned_action)
-    cryosparc_payload = build_cryosparc_payload(
-        project_uid=project_uid,
-        workspace_uid=workspace_uid,
-        planned_action=planned_action,
-        params=params,
-    )
-    job = None
-    execution_phase = "create_job"
     try:
         cs = cryosparc_client()
         workspace = cs.find_workspace(project_uid, workspace_uid)
         job = workspace.create_job(
-            cryosparc_payload["create_job"]["job_type"],
-            connections=cryosparc_payload["create_job"]["connections"],
-            params=cryosparc_payload["create_job"]["params"],
-            title=cryosparc_payload["create_job"]["title"],
-            desc=cryosparc_payload["create_job"]["desc"],
+            planned_action["job_type"],
+            connections=planned_action["connections"],
+            params=planned_action["resolved_parameters"],
+            title=f"Agent {planned_action['action_id']}",
+            desc="Created by cryosparc_agent execute_model_decision.",
         )
         queue = planned_action["queue"]
         queued = False
         if queue["will_queue"]:
-            execution_phase = "queue_job"
             if queue["lane"]:
                 job.queue(
                     lane=queue["lane"],
@@ -246,13 +212,6 @@ def execute_job_action(
             else:
                 job.queue()
             queued = True
-        register_submission(
-            logical_record,
-            job.uid,
-            scheduling["resource_config"],
-            scheduling["snapshot"],
-            scheduling["reason"],
-        )
 
         return {
             "success": True,
@@ -270,119 +229,13 @@ def execute_job_action(
             ),
             "human_action_required": bool(planned_action["approval_required"]),
             "planned_action": planned_action,
-            "diagnostics": {
-                "execution_phase": "completed",
-                "cryosparc_payload": cryosparc_payload,
-                "http_response": None,
-            },
-            "resource_scheduling": {
-                "logical_job": logical_record.__dict__,
-                "effective_parameters": params,
-            },
         }
     except Exception as exc:
-        http_response = extract_http_response(exc)
         return {
             "success": False,
             "dry_run": False,
             "status": "failed",
             "error": str(exc),
             "error_type": type(exc).__name__,
-            "project_uid": project_uid,
-            "workspace_uid": workspace_uid,
-            "job_uid": getattr(job, "uid", None),
-            "job_type": planned_action["job_type"],
-            "queued": False,
             "planned_action": planned_action,
-            "diagnostics": {
-                "execution_phase": execution_phase,
-                "cryosparc_payload": cryosparc_payload,
-                "http_response": http_response,
-            },
-            "issues": [
-                {
-                    "severity": "error",
-                    "code": "cryosparc_execution_error",
-                    "message": str(exc),
-                    "path": "cryoSPARC",
-                }
-            ],
-            "resource_scheduling": {
-                "logical_job": logical_record.__dict__,
-                "effective_parameters": params,
-            },
         }
-
-
-def refresh_scheduling_plan(planned_action: dict[str, Any]) -> dict[str, Any]:
-    """Refresh resource state immediately before live submission."""
-    existing = planned_action.get("resource_scheduling") or {}
-    queue = planned_action.get("queue") or {}
-    spec = get_job_spec(planned_action["job_type"])
-    return build_scheduling_plan(
-        job_type=planned_action["job_type"],
-        spec=spec,
-        params=planned_action["resolved_parameters"],
-        requested_lane=queue.get("lane") or existing.get("selected_lane"),
-        resource_snapshot=probe_cluster_resources(),
-    )
-
-
-def build_cryosparc_payload(
-    project_uid: str,
-    workspace_uid: str,
-    planned_action: dict[str, Any],
-    params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Record the cryosparc-tools operation payload before execution."""
-    queue = planned_action["queue"]
-    return {
-        "project_uid": project_uid,
-        "workspace_uid": workspace_uid,
-        "create_job": {
-            "job_type": planned_action["job_type"],
-            "connections": planned_action["connections"],
-            "params": params if params is not None else planned_action["resolved_parameters"],
-            "title": f"Agent {planned_action['action_id']}",
-            "desc": "Created by cryosparc_agent execute_model_decision.",
-        },
-        "queue": {
-            "will_queue": queue["will_queue"],
-            "lane": queue["lane"],
-            "hostname": queue["hostname"],
-            "gpus": queue["gpus"],
-            "cluster_vars": queue["cluster_vars"],
-        },
-    }
-
-
-def extract_http_response(exc: Exception) -> dict[str, Any] | None:
-    """Best-effort extraction for httpx/cryosparc-tools HTTP errors."""
-    response = getattr(exc, "response", None)
-    if response is None:
-        return None
-    body = None
-    try:
-        body = response.text
-    except Exception:
-        try:
-            body = response.content.decode("utf-8", errors="replace")
-        except Exception:
-            body = None
-    parsed_body: Any = None
-    if body:
-        try:
-            import json
-
-            parsed_body = json.loads(body)
-        except Exception:
-            parsed_body = None
-    request = getattr(response, "request", None)
-    return {
-        "status_code": getattr(response, "status_code", None),
-        "reason_phrase": getattr(response, "reason_phrase", None),
-        "url": str(getattr(request, "url", "")) if request is not None else None,
-        "method": getattr(request, "method", None) if request is not None else None,
-        "body": body,
-        "json": parsed_body,
-    }

@@ -4,7 +4,6 @@ import unittest
 from action_registry import (
     execute_model_decision_payload,
     generate_candidate_actions,
-    get_candidate_actions,
     validate_model_decision_payload,
 )
 
@@ -356,50 +355,6 @@ def forward_decision(**overrides):
 
 
 class ActionRegistryFixedTests(unittest.TestCase):
-    def test_empty_micrographs_dataset_generates_import_candidate(self):
-        workflow_state = {
-            "schema_version": "1.0",
-            "generated_at": "2026-09-08T00:00:00+00:00",
-            "project_uid": "P2",
-            "workspace_uid": "W16",
-            "workflow_status": "not_started",
-            "nodes": [],
-            "edges": [],
-            "root_nodes": [],
-            "terminal_nodes": [],
-            "running_nodes": [],
-            "failed_nodes": [],
-            "node_mapping": {},
-            "state_snapshot_id": "snapshot-empty",
-        }
-        dataset_info = {
-            "input_type": "micrographs",
-            "pixel_size_A": 0.6575,
-            "accelerating_voltage_kv": 300,
-            "spherical_aberration_mm": 2.7,
-            "total_exposure_dose_e_per_A2": 53,
-            "blob_paths": "/home/share/empiar/10025/data/14sep05c_averaged_196/*.mrc",
-        }
-
-        with unittest.mock.patch(
-            "action_registry.extract_workflow_state",
-            return_value=workflow_state,
-        ):
-            result = get_candidate_actions("P2", "W16", dataset_info=dataset_info)
-
-        self.assertIsNone(result["decision_hint"])
-        self.assertEqual(len(result["candidate_actions"]), 1)
-        action = result["candidate_actions"][0]
-        self.assertEqual(action["job_type"], "import_micrographs")
-        self.assertEqual(
-            action["default_parameters"]["blob_paths"],
-            "/home/share/empiar/10025/data/14sep05c_averaged_196/*.mrc",
-        )
-        self.assertEqual(action["default_parameters"]["psize_A"], 0.6575)
-        self.assertEqual(action["default_parameters"]["accel_kv"], 300)
-        self.assertEqual(action["default_parameters"]["cs_mm"], 2.7)
-        self.assertEqual(action["default_parameters"]["total_dose_e_per_A2"], 53)
-
     def test_stale_context_ids_are_rejected(self):
         decision = {
             "schema_version": "1.0",

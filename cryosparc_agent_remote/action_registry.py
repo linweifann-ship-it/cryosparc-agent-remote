@@ -89,15 +89,14 @@ def build_initial_import_candidates(
 ) -> list[dict[str, Any]]:
     """Build import candidates from explicit dataset file facts at startup."""
     files = dataset_info.get("available_input_files") or {}
-    facts = normalize_dataset_facts(dataset_info)
     candidates = []
     sources = [
-        ("micrograph_blob_paths", "import_micrographs", "blob_paths"),
-        ("movie_blob_paths", "import_movies", "blob_paths"),
+        ("micrograph_blob_paths", "import_micrographs", "micrograph_blob_paths"),
+        ("movie_blob_paths", "import_movies", "movie_blob_paths"),
         ("volume_blob_path", "import_volumes", "volume_blob_path"),
     ]
     for file_key, job_type, parameter_name in sources:
-        value = files.get(file_key) or facts.get(file_key)
+        value = files.get(file_key)
         if not value:
             continue
         if isinstance(value, list):
@@ -105,8 +104,8 @@ def build_initial_import_candidates(
         template = get_parameter_template(job_type)
         defaults = {parameter_name if parameter_name in template else "blob_paths": value}
         for name in ("psize_A", "accel_kv", "cs_mm", "total_dose_e_per_A2"):
-            if facts.get(name) is not None and name in template:
-                defaults[name] = facts[name]
+            if dataset_info.get(name) is not None and name in template:
+                defaults[name] = dataset_info[name]
         candidates.append({
             "action_id": f"initial_{job_type}",
             "action_type": "forward",
@@ -126,34 +125,6 @@ def build_initial_import_candidates(
             "workflow_policy_recommendation": "preferred_next_stage",
         })
     return candidates
-
-
-def normalize_dataset_facts(dataset_info: dict[str, Any]) -> dict[str, Any]:
-    """Map model-facing dataset facts to CryoSPARC import parameter names."""
-    facts = {
-        "psize_A": dataset_info.get("psize_A", dataset_info.get("pixel_size_A")),
-        "accel_kv": dataset_info.get(
-            "accel_kv",
-            dataset_info.get("accelerating_voltage_kv"),
-        ),
-        "cs_mm": dataset_info.get(
-            "cs_mm",
-            dataset_info.get("spherical_aberration_mm"),
-        ),
-        "total_dose_e_per_A2": dataset_info.get(
-            "total_dose_e_per_A2",
-            dataset_info.get("total_exposure_dose_e_per_A2"),
-        ),
-    }
-    blob_paths = dataset_info.get("blob_paths")
-    input_type = dataset_info.get("input_type")
-    if blob_paths and input_type == "micrographs":
-        facts["micrograph_blob_paths"] = blob_paths
-    elif blob_paths and input_type == "movies":
-        facts["movie_blob_paths"] = blob_paths
-    elif blob_paths:
-        facts["micrograph_blob_paths"] = blob_paths
-    return facts
 
 
 def generate_candidate_actions(
@@ -704,46 +675,8 @@ def validate_model_decision_payload(
     candidate_actions: list[dict[str, Any]] | None = None,
     expected_state_snapshot_id: str | None = None,
     expected_candidate_set_id: str | None = None,
-    allow_internal_schema: bool = True,
 ) -> dict[str, Any]:
     """Validate a model decision without creating or enqueueing CryoSPARC jobs."""
-    if payload.get("schema_version") == "3.0":
-        from v2_decision_adapter import adapt_v2_decision_to_internal
-
-        adapter_result = adapt_v2_decision_to_internal(
-            payload,
-            candidate_actions or [],
-        )
-        if not adapter_result["success"]:
-            result = ValidationResult(
-                success=False,
-                valid_schema=False,
-                valid_actions=False,
-                issues=[
-                    ValidationIssue.model_validate(issue)
-                    for issue in adapter_result.get("issues", [])
-                ],
-            )
-            return result.model_dump()
-        payload = adapter_result["internal_decision"]
-    elif not allow_internal_schema:
-        result = ValidationResult(
-            success=False,
-            valid_schema=False,
-            valid_actions=False,
-            issues=[
-                ValidationIssue(
-                    code="unsupported_schema_version",
-                    message=(
-                        "Model-facing decisions must use schema_version '3.0' "
-                        "with minimal_v3 selected_actions."
-                    ),
-                    path="schema_version",
-                )
-            ],
-        )
-        return result.model_dump()
-
     decision, schema_issues = parse_model_decision(payload)
     if decision is None:
         result = ValidationResult(
@@ -781,7 +714,6 @@ def execute_model_decision_payload(
     project_uid: str | None = None,
     workspace_uid: str | None = None,
     allow_approval_required_create: bool = False,
-    allow_internal_schema: bool = True,
 ) -> dict[str, Any]:
     """
     Convert a validated decision into an execution plan.
@@ -795,7 +727,6 @@ def execute_model_decision_payload(
         candidate_actions=candidate_actions,
         expected_state_snapshot_id=expected_state_snapshot_id,
         expected_candidate_set_id=expected_candidate_set_id,
-        allow_internal_schema=allow_internal_schema,
     )
     if not validation["success"]:
         return {

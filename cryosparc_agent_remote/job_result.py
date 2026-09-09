@@ -176,9 +176,6 @@ def build_model_result_package(
         "outputs": summarize_outputs(node),
         "metrics": build_basic_metrics(node),
         "quality_assessment": assess_node(node),
-        "failure_context": build_failure_context(node)
-        if node["status"] in {"failed", "killed"} or node["has_error"]
-        else None,
         "workflow_context": {
             "workflow_status": workflow_state["workflow_status"],
             "running_nodes": workflow_state["running_nodes"],
@@ -221,27 +218,6 @@ def build_model_result_package(
         package["decision_hint"] = candidate_context["decision_hint"]
 
     return package
-
-
-def build_failure_context(node: dict[str, Any]) -> dict[str, Any]:
-    """Expose failed/killed job facts for the model's next decision."""
-    return {
-        "job_uid": node["cryosparc_job_uid"],
-        "job_type": node["job_type"],
-        "status": node["status"],
-        "has_error": node["has_error"],
-        "has_warning": node["has_warning"],
-        "run_errors": node.get("run_errors") or {},
-        "timestamps": node.get("timestamps") or {},
-        "runtime": node.get("runtime") or {},
-        "inputs": node["inputs"],
-        "outputs": summarize_outputs(node),
-        "allowed_model_decisions": ["retry", "rollback", "branch", "stop"],
-        "instruction": (
-            "Use this failure context as evidence. Decide whether to retry with "
-            "legal changed parameters or inputs, rollback, branch, or stop."
-        ),
-    }
 
 
 def summarize_outputs(node: dict[str, Any]) -> dict[str, dict[str, Any]]:
