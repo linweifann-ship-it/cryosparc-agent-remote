@@ -591,13 +591,7 @@ def kill_job(
         workspace = cs.find_workspace(project_uid, workspace_uid)
         for job in workspace.find_jobs():
             if job.uid == job_uid:
-                job.kill()
-                return {
-                    "job_uid": job_uid,
-                    "previous_status": status,
-                    "action": "kill",
-                    "success": True,
-                }
+                return cancel_physical_race_job(job, job_uid, status)
         return {
             "job_uid": job_uid,
             "previous_status": status,
@@ -614,6 +608,45 @@ def kill_job(
             "error_type": type(exc).__name__,
             "error": str(exc),
         }
+
+
+def cancel_physical_race_job(
+    job: Any,
+    job_uid: str,
+    status: str,
+) -> dict[str, Any]:
+    errors = []
+    for method_name in ("kill", "cancel"):
+        method = getattr(job, method_name, None)
+        if method is None:
+            errors.append({
+                "method": method_name,
+                "error_type": "AttributeError",
+                "error": f"job has no {method_name} method",
+            })
+            continue
+        try:
+            method()
+            return {
+                "job_uid": job_uid,
+                "previous_status": status,
+                "action": "kill",
+                "method": method_name,
+                "success": True,
+            }
+        except Exception as exc:
+            errors.append({
+                "method": method_name,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            })
+    return {
+        "job_uid": job_uid,
+        "previous_status": status,
+        "action": "kill",
+        "success": False,
+        "attempts": errors,
+    }
 
 
 def extract_observations(event: dict[str, Any]) -> list[dict[str, Any]]:

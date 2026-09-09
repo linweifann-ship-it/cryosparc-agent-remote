@@ -8,6 +8,7 @@ from unittest.mock import patch
 from cryosparc_agent_remote.openai_agents_runner import (
     AgentsRunConfig,
     build_step_input,
+    cancel_physical_race_job,
     config_from_args,
     contains_stop,
     extract_usage,
@@ -160,6 +161,24 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
 
         kill.assert_not_called()
         self.assertEqual(result, [])
+
+    def test_cancel_physical_race_job_falls_back_to_cancel(self):
+        class FakeJob:
+            def __init__(self):
+                self.cancelled = False
+
+            def kill(self):
+                raise RuntimeError("cannot kill from this state")
+
+            def cancel(self):
+                self.cancelled = True
+
+        job = FakeJob()
+        result = cancel_physical_race_job(job, "J220", "queued")
+
+        self.assertTrue(job.cancelled)
+        self.assertEqual(result["method"], "cancel")
+        self.assertTrue(result["success"])
 
     def test_summarize_prompt_cache_accepts_responses_and_chat_usage(self):
         summary = summarize_prompt_cache([

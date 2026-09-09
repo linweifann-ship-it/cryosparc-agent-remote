@@ -392,6 +392,15 @@ def execute_race_job_action(
                 "lane": lane_queue["lane"],
                 "resource_scheduling": lane_scheduling,
             })
+            early_race_result = reconcile_race_jobs_once(
+                workspace,
+                [physical_job["job_uid"] for physical_job in physical_jobs],
+            )
+            if early_race_result.get("winner_job_uid"):
+                physical_jobs[-1]["status"] = (
+                    early_race_result.get("statuses", {}).get(job.uid)
+                    or physical_jobs[-1]["status"]
+                )
         race_result = wait_for_race_winner_and_kill_losers(
             workspace,
             [job["job_uid"] for job in physical_jobs],
@@ -492,25 +501,13 @@ def wait_for_race_winner_and_kill_losers(
     poll_count = 0
     while True:
         poll_count += 1
-        jobs_by_uid = {job.uid: job for job in workspace.find_jobs()}
-        statuses = {
-            job_uid: str(getattr(jobs_by_uid.get(job_uid), "status", "not_found"))
-            for job_uid in job_uids
-        }
-        winner = select_race_winner(statuses)
-        if winner:
-            cancellations = kill_non_running_race_losers(
-                jobs_by_uid,
-                winner,
-                statuses,
-            )
-            return {
-                "winner_job_uid": winner,
-                "statuses": statuses,
-                "cancellations": cancellations,
-                "poll_count": poll_count,
-            }
+        result = reconcile_race_jobs_once(workspace, job_uids)
+        if result.get("winner_job_uid"):
+            result["poll_count"] = poll_count
+            return result
         if timeout_seconds <= 0 or monotonic() >= deadline:
+            jobs_by_uid = {job.uid: job for job in workspace.find_jobs()}
+            statuses = get_race_statuses(jobs_by_uid, job_uids)
             return {
                 "winner_job_uid": None,
                 "statuses": statuses,
@@ -519,6 +516,35 @@ def wait_for_race_winner_and_kill_losers(
                 "timed_out": True,
             }
         sleep(max(poll_interval_seconds, 1))
+
+
+def reconcile_race_jobs_once(
+    workspace: Any,
+    job_uids: list[str],
+) -> dict[str, Any]:
+    jobs_by_uid = {job.uid: job for job in workspace.find_jobs()}
+    statuses = get_race_statuses(jobs_by_uid, job_uids)
+    winner = select_race_winner(statuses)
+    cancellations = (
+        kill_non_running_race_losers(jobs_by_uid, winner, statuses)
+        if winner
+        else []
+    )
+    return {
+        "winner_job_uid": winner,
+        "statuses": statuses,
+        "cancellations": cancellations,
+    }
+
+
+def get_race_statuses(
+    jobs_by_uid: dict[str, Any],
+    job_uids: list[str],
+) -> dict[str, str]:
+    return {
+        job_uid: str(getattr(jobs_by_uid.get(job_uid), "status", "not_found"))
+        for job_uid in job_uids
+    }
 
 
 def select_race_winner(statuses: dict[str, str]) -> str | None:
@@ -554,24 +580,47 @@ def kill_non_running_race_losers(
                 "error": "job_not_found",
             })
             continue
-        try:
-            job.kill()
-            results.append({
-                "job_uid": job_uid,
-                "previous_status": status,
-                "action": "kill",
-                "success": True,
+        results.append(cancel_physical_race_job(job, job_uid, status))
+    return results
+
+
+def cancel_physical_race_job(
+    job: Any,
+    job_uid: str,
+    status: str,
+) -> dict[str, Any]:
+    errors = []
+    for method_name in ("kill", "cancel"):
+        method = getattr(job, method_name, None)
+        if method is None:
+            errors.append({
+                "method": method_name,
+                "error_type": "AttributeError",
+                "error": f"job has no {method_name} method",
             })
-        except Exception as exc:
-            results.append({
+            continue
+        try:
+            method()
+            return {
                 "job_uid": job_uid,
                 "previous_status": status,
                 "action": "kill",
-                "success": False,
+                "method": method_name,
+                "success": True,
+            }
+        except Exception as exc:
+            errors.append({
+                "method": method_name,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             })
-    return results
+    return {
+        "job_uid": job_uid,
+        "previous_status": status,
+        "action": "kill",
+        "success": False,
+        "attempts": errors,
+    }
 
 
 def refresh_scheduling_plan(planned_action: dict[str, Any]) -> dict[str, Any]:

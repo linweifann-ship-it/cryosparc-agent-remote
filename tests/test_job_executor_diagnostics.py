@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cryosparc_agent_re
 
 from cryosparc_agent_remote.job_executor import (
     build_cryosparc_payload,
+    cancel_physical_race_job,
     execute_job_action,
     extract_http_response,
     kill_non_running_race_losers,
@@ -185,8 +186,28 @@ class JobExecutorDiagnosticsTests(unittest.TestCase):
             "job_uid": "J225",
             "previous_status": "launched",
             "action": "kill",
+            "method": "kill",
             "success": True,
         }])
+
+    def test_race_loser_cancel_fallback_when_kill_fails(self):
+        class FakeJob:
+            def __init__(self):
+                self.cancelled = False
+
+            def kill(self):
+                raise RuntimeError("cannot kill from this state")
+
+            def cancel(self):
+                self.cancelled = True
+
+        job = FakeJob()
+        result = cancel_physical_race_job(job, "J225", "queued")
+
+        self.assertTrue(job.cancelled)
+        self.assertEqual(result["job_uid"], "J225")
+        self.assertEqual(result["method"], "cancel")
+        self.assertTrue(result["success"])
 
 
 if __name__ == "__main__":
