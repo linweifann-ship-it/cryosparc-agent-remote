@@ -10,6 +10,7 @@ def workflow_state(
     status: str,
     old_active: bool = False,
     job_type: str = "extract_micrographs_multi",
+    has_error: bool = False,
 ) -> dict:
     """Return a minimal normalized workflow state containing one test job."""
     started_at = (
@@ -40,8 +41,8 @@ def workflow_state(
                     "running_at": started_at.isoformat(),
                     "launched_at": started_at.isoformat(),
                     "completed_at": None,
-                    "failed_at": None,
-                    "killed_at": None,
+                    "failed_at": started_at.isoformat() if status == "failed" else None,
+                    "killed_at": started_at.isoformat() if status == "killed" else None,
                     "heartbeat_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
@@ -76,7 +77,8 @@ def workflow_state(
                     "box_size_pix": 400,
                     "compute_num_gpus": 4,
                 },
-                "has_error": False,
+                "run_errors": {"raw": "Traceback\nRuntimeError: worker failed"},
+                "has_error": has_error,
                 "has_warning": False,
             }
         ],
@@ -159,6 +161,24 @@ class JobResultPackageTests(unittest.TestCase):
         self.assertNotIn("selected_actions_rule", result["output_contract"])
         self.assertIn("decision_rule", result["output_contract"])
         self.assertEqual(result["metrics"]["num_items_by_output"]["particles"], 100)
+
+    def test_failed_job_returns_model_visible_failure_context(self):
+        with patch(
+            "job_result.extract_workflow_state",
+            return_value=workflow_state("failed", has_error=True),
+        ):
+            result = get_job_result_package("P2", "W3", "J30")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["ready_for_model"])
+        self.assertFalse(result["internal_only"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_context"]["job_uid"], "J30")
+        self.assertEqual(
+            result["failure_context"]["allowed_model_decisions"],
+            ["retry", "rollback", "branch", "stop"],
+        )
+        self.assertIn("RuntimeError", result["failure_context"]["run_errors"]["raw"])
 
 
 if __name__ == "__main__":

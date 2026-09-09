@@ -106,6 +106,7 @@ class V2DecisionAdapterTests(unittest.TestCase):
         action = result["internal_decision"]["selected_actions"][0]
         self.assertEqual(action["action_id"], "forward_J9")
         self.assertEqual(action["job_type"], "class_2D_new")
+        self.assertNotIn("connections", action)
 
     def test_unknown_v2_action_becomes_generic_plan(self):
         decision = v2_forward_decision()
@@ -144,6 +145,46 @@ class V2DecisionAdapterTests(unittest.TestCase):
             result["internal_decision"]["branch_plan"]["max_parallel_branches"],
             1,
         )
+
+    def test_duplicate_same_type_candidates_prefer_create_job_over_dry_run(self):
+        create_action = {
+            **candidate_actions()[0],
+            "action_id": "forward_J161_blob_picker_gpu",
+            "workflow_node_id": "J161:blob_picker_gpu",
+            "reference_job_uid": None,
+            "reference_status": None,
+            "job_type": "blob_picker_gpu",
+            "execution_mode": "create_job",
+        }
+        dry_run_action = {
+            **candidate_actions()[0],
+            "action_id": "forward_J171",
+            "workflow_node_id": "J171",
+            "reference_job_uid": "J171",
+            "reference_status": "building",
+            "job_type": "blob_picker_gpu",
+            "execution_mode": "dry_run_only",
+        }
+        decision = {
+            "schema_version": "3.0",
+            "decision_type": "forward",
+            "selected_actions": [
+                {
+                    "job_type": "blob_picker_gpu",
+                    "parameters": {"diameter": 200, "diameter_max": 300},
+                }
+            ],
+        }
+
+        result = adapt_v2_decision_to_internal(
+            decision,
+            [dry_run_action, create_action],
+        )
+
+        self.assertTrue(result["success"])
+        action = result["internal_decision"]["selected_actions"][0]
+        self.assertEqual(action["action_id"], "forward_J161_blob_picker_gpu")
+        self.assertNotIn("connections", action)
 
     def test_v2_execute_dry_run_reuses_internal_executor(self):
         with patch(

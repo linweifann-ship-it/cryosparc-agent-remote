@@ -77,6 +77,7 @@ def build_dataset_info(
         "total_exposure_dose_e_per_A2": dataset_info.get(
             "total_exposure_dose_e_per_A2"
         ),
+        "blob_paths": dataset_info.get("blob_paths"),
         "symmetry": dataset_info.get("symmetry"),
     }
     if dataset["known_workflow_steps"] is None:
