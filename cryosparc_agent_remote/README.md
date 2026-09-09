@@ -13,6 +13,24 @@ The default execution path is still conservative: `execute_model_decision` and
 execution while `dry_run=true`. Live execution is available for approved
 forward actions and has been tested on the `g8m192_4090_slurm` lane.
 
+## Deep Agents closed-loop harness
+
+On the `deepagents` branch, use
+`scripts/run_deepagents_closed_loop.py` for the new autonomous loop. It uses
+official `deepagents.create_deep_agent`, a LangChain `ChatOpenAI` model
+instance, LangGraph's SQLite checkpointer, and `MultiServerMCPClient` to load
+this server's existing tools. There is one main agent and no subagents.
+
+The harness does not reimplement CryoSPARC access: the agent calls existing
+`get_workflow_decision_context`, `validate_v2_model_decision`,
+`execute_v2_model_decision`, and job-result MCP tools in order. It writes one
+JSON log per round (model inputs/outputs, tool calls, decision, validation,
+execution, observation, and token usage) plus a LangGraph SQLite checkpoint.
+Reuse `--checkpoint-path` and `--thread-id` together to resume a conversation.
+
+The old `autonomous_mcp_closed_loop.py` remains as a compatibility/reference
+runner for benchmark parity; new Deep Agents runs should use the new script.
+
 ## Architecture
 
 The system has five layers:

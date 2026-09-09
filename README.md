@@ -19,6 +19,39 @@ Main capabilities:
 See [`cryosparc_agent_remote/README.md`](cryosparc_agent_remote/README.md) for
 the full bilingual documentation.
 
+## Deep Agents harness
+
+The `deepagents` branch adds a single-main-agent replacement for the custom
+autonomous closed-loop driver. It keeps the existing MCP server and all
+workflow/scientific logic intact; Deep Agents only drives the loop through
+those tools.
+
+```bash
+cd cryosparc-agent-remote
+/opt/anaconda3/bin/python -m pip install -r requirements-deepagents.txt
+
+# Safe smoke: starts only the MCP stdio server and lists tools. No model call,
+# workflow read, validation, job creation, or CryoSPARC execution.
+/opt/anaconda3/bin/python scripts/run_deepagents_closed_loop.py \
+  --project P2 --workspace W1 \
+  --server-python /opt/anaconda3/bin/python \
+  --project-dir "$PWD/cryosparc_agent_remote" --smoke
+```
+
+For a dry-run decision round, set the existing OpenAI-compatible configuration
+through flags or environment (the harness has no key/base-URL/model default):
+
+```bash
+export OPENAI_API_KEY=... OPENAI_BASE_URL=... OPENAI_MODEL=...
+/opt/anaconda3/bin/python scripts/run_deepagents_closed_loop.py \
+  --project P2 --workspace W1 \
+  --server-python /path/to/server-python \
+  --project-dir /path/to/cryosparc_agent_remote
+```
+
+Without `--execute`, `execute_v2_model_decision` is instructed to remain
+`dry_run=true`. `--execute` is an explicit live-workflow opt-in.
+
 ---
 
 # CryoSPARC Agent 项目
