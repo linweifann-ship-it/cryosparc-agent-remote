@@ -89,6 +89,7 @@ def execute_v2_model_decision_payload(
     v2_decision: dict[str, Any],
     project_uid: str,
     workspace_uid: str,
+    dataset_info: dict[str, Any] | None = None,
     current_node_id: str | None = None,
     dry_run: bool = True,
     allow_approval_required_create: bool = False,
@@ -98,6 +99,7 @@ def execute_v2_model_decision_payload(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
+        dataset_info=dataset_info,
     )
     adapter_result = adapt_v2_decision_to_internal(
         v2_decision,
