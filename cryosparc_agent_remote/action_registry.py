@@ -19,6 +19,7 @@ from workflow_policy import (
     annotate_candidates,
     build_decision_guidance,
     infer_current_stage,
+    job_number,
     POLICY_VERSION,
 )
 from quality_policy import assess_node, build_retry_candidate
@@ -40,7 +41,7 @@ def get_candidate_actions(
     current_node = (
         find_node(workflow_state, current_node_id)
         if current_node_id
-        else None
+        else latest_workspace_node(workflow_state)
     )
     canonical_current_node_id = (
         current_node["workflow_node_id"]
@@ -72,6 +73,18 @@ def get_candidate_actions(
         current_node=current_node,
         candidates=candidate_actions,
     )
+    if current_node and inspect_picks_required(workflow_state, current_node):
+        workflow_guidance["inspect_picks"] = {
+            "priority": "mandatory",
+            "reason": (
+                "The completed Picking job has no completed Inspect Picks result "
+                "linked to its picks."
+            ),
+            "model_instruction": (
+                "MUST complete inspect_picks_v2 before Extraction or any other "
+                "downstream action."
+            ),
+        }
     return {
         "schema_version": "1.0",
         "registry_version": REGISTRY_VERSION,
@@ -89,6 +102,14 @@ def get_candidate_actions(
         "quality_assessment": quality_assessment,
         "workflow_guidance": workflow_guidance,
     }
+
+
+def latest_workspace_node(workflow_state: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the most recent workspace node when a caller has no cursor."""
+    nodes = workflow_state.get("nodes") or []
+    if not nodes:
+        return None
+    return max(nodes, key=lambda node: job_number(node.get("cryosparc_job_uid", "")))
 
 
 def build_initial_import_candidates(
@@ -271,22 +292,35 @@ def apply_hard_workflow_gates(
     """Enforce mandatory inspection and finite box-size trial stages."""
     gated: list[dict[str, Any]] = []
     job_type = current_node.get("job_type")
-    if job_type in {"blob_picker_gpu", "auto_blob_picker_gpu"}:
+    if inspect_picks_required(workflow_state, current_node):
         inspection = [
             action for action in candidates
             if action.get("job_type") == "inspect_picks_v2"
         ]
+        for action in candidates:
+            if action not in inspection:
+                gated.append({
+                    **action,
+                    "available": False,
+                    "blocked_by": list(action.get("blocked_by") or []) + [
+                        "Mandatory Inspect Picks gate: complete inspect_picks_v2 before downstream actions."
+                    ],
+                })
         if inspection:
-            for action in candidates:
-                if action not in inspection:
-                    gated.append({
-                        **action,
-                        "available": False,
-                        "blocked_by": list(action.get("blocked_by") or []) + [
-                            "Mandatory Inspect Picks gate: complete inspect_picks_v2 before downstream actions."
-                        ],
-                    })
             return inspection, gated
+        gated.append({
+            "action_id": f"blocked_{current_node['cryosparc_job_uid']}_inspect_picks_v2",
+            "action_type": "forward",
+            "workflow_node_id": f"{current_node['workflow_node_id']}:inspect_picks_v2",
+            "reference_job_uid": current_node["cryosparc_job_uid"],
+            "reference_status": current_node["status"],
+            "job_type": "inspect_picks_v2",
+            "available": False,
+            "blocked_by": [
+                "Mandatory Inspect Picks gate could not expose an executable inspect_picks_v2 candidate."
+            ],
+        })
+        return [], gated
 
     if job_type == "extract_micrographs_multi":
         trials = build_box_size_trial_candidates(workflow_state, current_node)
@@ -312,6 +346,34 @@ def apply_hard_workflow_gates(
                 })
             return class_trials, gated
     return candidates, gated
+
+
+def inspect_picks_required(
+    workflow_state: dict[str, Any], current_node: dict[str, Any] | None
+) -> bool:
+    """Whether this completed Picking output still requires its QC job.
+
+    A completed Inspect Picks job linked to this picker's particles or
+    micrographs is the existing machine-readable QC confirmation.  No new QC
+    vocabulary is invented here; failures and non-terminal jobs remain pending.
+    """
+    if not current_node or current_node.get("job_type") not in {
+        "blob_picker_gpu", "auto_blob_picker_gpu", "template_picker_gpu",
+    }:
+        return False
+    picker_uid = current_node.get("cryosparc_job_uid")
+    for node in workflow_state.get("nodes") or []:
+        if node.get("job_type") != "inspect_picks_v2" or node.get("status") != "completed":
+            continue
+        parent_uids = set(node.get("parent_job_uids") or [])
+        source_uids = {
+            connection.get("source_job_uid")
+            for connections in (node.get("inputs") or {}).values()
+            for connection in connections
+        }
+        if picker_uid in parent_uids or picker_uid in source_uids:
+            return False
+    return True
 
 
 def configured_box_size_trials() -> list[int]:

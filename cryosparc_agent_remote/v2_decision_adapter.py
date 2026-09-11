@@ -2,6 +2,7 @@
 from typing import Any
 
 from action_registry import execute_model_decision_payload, get_candidate_actions
+from workflow_policy import inspect_picks_gate_violation
 
 
 def adapt_v2_decision_to_internal(
@@ -146,6 +147,21 @@ def execute_v2_model_decision_payload(
             "internal_decision": None,
             "execution_result": None,
             "issues": adapter_result["issues"],
+        }
+
+    inspect_gate_issue = inspect_picks_gate_violation(
+        v2_decision,
+        candidate_context.get("workflow_guidance") or {},
+    )
+    if inspect_gate_issue is not None:
+        return {
+            "success": False,
+            "dry_run": dry_run,
+            "execution_mode": "inspect_picks_qc_gate",
+            "candidate_context": summarize_candidate_context(candidate_context),
+            "internal_decision": adapter_result["internal_decision"],
+            "execution_result": None,
+            "issues": [inspect_gate_issue],
         }
 
     if (

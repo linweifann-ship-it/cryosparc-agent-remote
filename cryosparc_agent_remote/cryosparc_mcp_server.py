@@ -22,6 +22,7 @@ from v2_decision_adapter import (
     adapt_v2_decision_to_internal,
     execute_v2_model_decision_payload,
 )
+from workflow_policy import inspect_picks_gate_violation
 from workflow_state import extract_workflow_state
 from vision_inputs import (
     build_class_average_visual_context,
@@ -456,12 +457,31 @@ def validate_v2_model_decision(
         candidate_context.get("candidate_actions") or [],
     )
     validation = apply_inspect_parameter_guard(decision, validation)
+    validation = apply_inspect_picks_completion_guard(
+        decision,
+        validation,
+        candidate_context.get("workflow_guidance") or {},
+    )
     return {
         "success": validation["success"],
         "adapter_result": adapter_result,
         "validation": validation,
         "workflow_guidance": candidate_context.get("workflow_guidance") or {},
     }
+
+
+def apply_inspect_picks_completion_guard(
+    decision: dict[str, Any], validation: dict[str, Any], guidance: dict[str, Any]
+) -> dict[str, Any]:
+    """Reject generic or stale-cursor downstream actions before Pick QC."""
+    violation = inspect_picks_gate_violation(decision, guidance)
+    if not validation.get("success") or violation is None:
+        return validation
+    result = dict(validation)
+    result["success"] = False
+    result["valid_actions"] = False
+    result["issues"] = list(result.get("issues") or []) + [violation]
+    return result
 
 
 def apply_inspect_parameter_guard(

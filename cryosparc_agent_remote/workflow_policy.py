@@ -241,3 +241,31 @@ def build_decision_guidance(
 def job_number(uid: str) -> int:
     digits = "".join(char for char in str(uid) if char.isdigit())
     return int(digits) if digits else -1
+
+
+def inspect_picks_gate_violation(
+    decision: Dict[str, Any], guidance: Dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Return the invariant violation for a downstream action before pick QC."""
+    inspect_guidance = (guidance or {}).get("inspect_picks") or {}
+    if inspect_guidance.get("priority") != "mandatory":
+        return None
+    actions = decision.get("selected_actions")
+    if not isinstance(actions, list):
+        actions = [decision]
+    job_types = {
+        action.get("job_type") or action.get("action")
+        for action in actions
+        if isinstance(action, dict)
+    }
+    if job_types == {"inspect_picks_v2"}:
+        return None
+    return {
+        "severity": "error",
+        "code": "inspect_picks_qc_required",
+        "message": (
+            "Mandatory Inspect Picks QC is pending. Only inspect_picks_v2 may be "
+            "submitted from this completed Picking job."
+        ),
+        "path": "selected_actions",
+    }

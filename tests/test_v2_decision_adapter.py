@@ -249,6 +249,36 @@ class V2DecisionAdapterTests(unittest.TestCase):
         )
         self.assertTrue(any(item.code == "parameter_type_mismatch" for item in issues))
 
+    def test_execute_rejects_generic_extraction_while_inspect_is_mandatory(self):
+        decision = {
+            "decision_type": "forward",
+            "action": "extract_micrographs_multi",
+            "parameters": {},
+        }
+        context = {
+            "project_uid": "P2",
+            "workspace_uid": "W1",
+            "current_node_id": "J10",
+            "candidate_actions": [{
+                "action_id": "registry_J10_inspect_picks_v2",
+                "action_type": "forward",
+                "workflow_node_id": "J10:inspect_picks_v2",
+                "job_type": "inspect_picks_v2",
+                "parameter_template": {},
+                "default_parameters": {},
+            }],
+            "blocked_actions": [],
+            "decision_hint": None,
+            "workflow_guidance": {"inspect_picks": {"priority": "mandatory"}},
+        }
+        with patch("v2_decision_adapter.get_candidate_actions", return_value=context):
+            result = execute_v2_model_decision_payload(
+                decision, "P2", "W1", current_node_id="J10", dry_run=True
+            )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["execution_mode"], "inspect_picks_qc_gate")
+        self.assertEqual(result["issues"][0]["code"], "inspect_picks_qc_required")
+
 
 if __name__ == "__main__":
     unittest.main()

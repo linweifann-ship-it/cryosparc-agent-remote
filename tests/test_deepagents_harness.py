@@ -40,5 +40,24 @@ class DeepAgentsHarnessTests(unittest.TestCase):
         self.assertNotIn("write_file", tools)
 
 
+class DeepAgentsRoundStateTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cryosparc_agent_remote"))
+        from deepagents_harness import terminal_observation_job_uid
+        cls.terminal_observation_job_uid = staticmethod(terminal_observation_job_uid)
+
+    def test_terminal_mcp_observation_advances_current_node(self):
+        observation = [{
+            "type": "text",
+            "text": '{"ready_for_model": true, "status": "completed", "job_uid": "J253"}',
+        }]
+        self.assertEqual(self.terminal_observation_job_uid(observation), "J253")
+
+    def test_active_mcp_observation_does_not_advance_current_node(self):
+        observation = '{"ready_for_model": false, "status": "running", "job_uid": "J253"}'
+        self.assertIsNone(self.terminal_observation_job_uid(observation))
+
+
 if __name__ == "__main__":
     unittest.main()

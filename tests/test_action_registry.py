@@ -1,5 +1,6 @@
 # Fixed dry-run tests for model decision validation and planning.
 import unittest
+from unittest.mock import patch
 
 from action_registry import (
     build_initial_import_candidates,
@@ -7,6 +8,37 @@ from action_registry import (
     generate_candidate_actions,
     validate_model_decision_payload,
 )
+
+
+def picking_workflow_state(inspect_completed=False):
+    picker = {
+        "workflow_node_id": "J10", "logical_node_id": "picker", "cryosparc_job_uid": "J10",
+        "job_type": "blob_picker_gpu", "status": "completed", "updated_at": "2026-01-01T00:00:00Z",
+        "parent_job_uids": [], "child_job_uids": [], "child_workflow_node_ids": [],
+        "child_logical_node_ids": [], "inputs": {}, "outputs": {
+            "particles": {"available": True, "num_items": 100, "result_names": ["blob", "location"]},
+            "micrographs": {"available": True, "num_items": 2, "result_names": ["micrograph_blob"]},
+        }, "key_parameters": {}, "runtime": {}, "has_error": False, "has_warning": False,
+    }
+    nodes = [picker]
+    if inspect_completed:
+        nodes.append({
+            "workflow_node_id": "J11", "logical_node_id": "inspect", "cryosparc_job_uid": "J11",
+            "job_type": "inspect_picks_v2", "status": "completed", "updated_at": "2026-01-01T00:01:00Z",
+            "parent_job_uids": ["J10"], "child_job_uids": [], "child_workflow_node_ids": [],
+            "child_logical_node_ids": [], "inputs": {"particles": [{"source_job_uid": "J10"}]},
+            "outputs": {}, "key_parameters": {}, "runtime": {}, "has_error": False, "has_warning": False,
+        })
+    return {"nodes": nodes, "generated_at": "2026-01-01T00:00:00Z", "project_uid": "P2",
+            "workspace_uid": "W1", "workflow_status": "completed", "failed_nodes": []}
+
+
+def registry_candidate(job_type):
+    return {"action_id": f"registry_J10_{job_type}", "action_type": "forward",
+            "workflow_node_id": f"J10:{job_type}", "reference_job_uid": "J10",
+            "reference_status": "completed", "job_type": job_type, "available": True,
+            "blocked_by": [], "required_inputs": {}, "parameter_template": {},
+            "default_parameters": {}, "execution_mode": "create_job"}
 
 
 def candidate_actions():
@@ -365,6 +397,40 @@ def forward_decision(**overrides):
 
 
 class ActionRegistryFixedTests(unittest.TestCase):
+    def test_picking_exposes_only_inspect_until_qc_completes(self):
+        state = picking_workflow_state()
+        with patch(
+            "action_registry.build_registry_next_actions",
+            return_value=([registry_candidate("inspect_picks_v2"), registry_candidate("extract_micrographs_multi")], []),
+        ):
+            candidates, blocked = generate_candidate_actions(
+                state, "J10", project_uid="P2", include_registry=True
+            )
+        self.assertEqual([item["job_type"] for item in candidates], ["inspect_picks_v2"])
+        self.assertTrue(any(item["job_type"] == "extract_micrographs_multi" for item in blocked))
+
+    def test_completed_inspect_releases_extraction(self):
+        state = picking_workflow_state(inspect_completed=True)
+        with patch(
+            "action_registry.build_registry_next_actions",
+            return_value=([registry_candidate("inspect_picks_v2"), registry_candidate("extract_micrographs_multi")], []),
+        ):
+            candidates, _blocked = generate_candidate_actions(
+                state, "J10", project_uid="P2", include_registry=True
+            )
+        self.assertIn("extract_micrographs_multi", [item["job_type"] for item in candidates])
+
+    def test_missing_cursor_resolves_latest_workspace_node(self):
+        state = picking_workflow_state()
+        with patch("action_registry.extract_workflow_state", return_value=state), patch(
+            "action_registry.build_registry_next_actions",
+            return_value=([registry_candidate("inspect_picks_v2"), registry_candidate("extract_micrographs_multi")], []),
+        ):
+            from action_registry import get_candidate_actions
+            context = get_candidate_actions("P2", "W1")
+        self.assertEqual(context["current_node_id"], "J10")
+        self.assertEqual([item["job_type"] for item in context["candidate_actions"]], ["inspect_picks_v2"])
+
     def test_raw_movies_list_generates_import_movies_candidate(self):
         candidates = build_initial_import_candidates({"raw_movies": ["/data/movies/*.tif"]})
         self.assertEqual(len(candidates), 1)

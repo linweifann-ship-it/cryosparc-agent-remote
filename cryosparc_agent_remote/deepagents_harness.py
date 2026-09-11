@@ -121,6 +121,7 @@ async def discover_mcp_tools(args: argparse.Namespace) -> tuple[Any, list[Any]]:
         "execute_v2_model_decision",
         "get_job_result_package",
         "wait_for_job_result_package",
+        "get_pick_inspection_visual_context",
     }
     missing = sorted(required - names)
     if missing:
@@ -151,7 +152,9 @@ def build_agent(model: Any, mcp_tools: list[Any], checkpointer: Any) -> Any:
     )
 
 
-def round_instruction(args: argparse.Namespace, round_index: int) -> str:
+def round_instruction(
+    args: argparse.Namespace, round_index: int, current_node: str | None
+) -> str:
     execution_mode = "false" if args.execute else "true"
     return json.dumps(
         {
@@ -159,14 +162,15 @@ def round_instruction(args: argparse.Namespace, round_index: int) -> str:
             "round": round_index,
             "project_uid": args.project,
             "workspace_uid": args.workspace,
-            "current_job_uid": args.current_node,
+            "current_job_uid": current_node,
             "dataset_info": load_dataset_info(args),
             "known_workflow_dirs": args.known_workflow_dir or None,
             "required_protocol": [
-                "Call get_workflow_decision_context first with the supplied dataset_info. Treat its live workflow state and candidate actions as authoritative.",
+                "Call get_workflow_decision_context first with current_job_uid and the supplied dataset_info. Treat its live workflow state and candidate actions as authoritative.",
+                "When Inspect Picks is the live candidate, get_pick_inspection_visual_context is available for model evidence; use it when needed, without delegating the decision to another agent.",
                 "Make one V2 decision using the preserved output contract and scientific/rubric rules in the system prompt.",
-                "Call validate_v2_model_decision with that exact V2 decision and the supplied dataset_info before any execution.",
-                f"Only if validation succeeds, call execute_v2_model_decision with the supplied dataset_info and dry_run={execution_mode}. Never set dry_run=false unless this run was explicitly started with --execute.",
+                "Call validate_v2_model_decision with that exact V2 decision, current_node_id, and the supplied dataset_info before any execution.",
+                f"Only if validation succeeds, call execute_v2_model_decision with current_node_id, the supplied dataset_info, and dry_run={execution_mode}. Never set dry_run=false unless this run was explicitly started with --execute.",
                 "For a live created job, call wait_for_job_result_package and use its terminal result as the observation. For dry run, the execution plan is the observation.",
                 "Finish with exactly the V2 decision JSON object and no Markdown. Do not invent jobs, inputs, connections, state, or an observation.",
             ],
@@ -189,6 +193,35 @@ def messages_from_state(state: Any) -> list[Any]:
     if isinstance(values, dict):
         return list(values.get("messages") or [])
     return []
+
+
+def decode_tool_content(content: Any) -> Any:
+    """Decode the MCP adapter's text/content-block representation."""
+    if isinstance(content, str):
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            return content
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                decoded = decode_tool_content(item["text"])
+                if isinstance(decoded, dict):
+                    return decoded
+    return content
+
+
+def terminal_observation_job_uid(observation: Any) -> str | None:
+    """Return only the terminal Job UID supplied by MCP observation."""
+    package = decode_tool_content(observation)
+    if not isinstance(package, dict):
+        return None
+    if package.get("ready_for_model") and package.get("status") in {
+        "completed", "failed", "killed",
+    }:
+        job_uid = package.get("job_uid")
+        return job_uid if isinstance(job_uid, str) else None
+    return None
 
 
 def extract_round_records(messages: Iterable[Any]) -> dict[str, Any]:
@@ -262,14 +295,23 @@ async def run(args: argparse.Namespace) -> int:
     checkpoint_path = Path(args.checkpoint_path) if args.checkpoint_path else run_dir / "langgraph_checkpoints.sqlite"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     config = {"configurable": {"thread_id": args.thread_id or run_dir.name}}
+    current_node = args.current_node
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
         agent = build_agent(model, mcp_tools, checkpointer)
         write_json(run_dir / "agent.json", {"name": "cryosparc-deepagents-main", "subagents": 0, "thread_id": config["configurable"]["thread_id"], "checkpoint_path": str(checkpoint_path)})
         for round_index in range(1, args.max_rounds + 1):
-            await agent.ainvoke({"messages": [{"role": "user", "content": round_instruction(args, round_index)}]}, config=config)
+            # The checkpointer retains the whole conversation.  Capture its
+            # boundary before invoking the agent so a round report cannot
+            # attribute a prior decision/execution to the current turn.
+            state_before = await agent.aget_state(config)
+            prior_message_count = len(messages_from_state(state_before))
+            await agent.ainvoke({"messages": [{"role": "user", "content": round_instruction(args, round_index, current_node)}]}, config=config)
             state = await agent.aget_state(config)
-            records = extract_round_records(messages_from_state(state))
+            records = extract_round_records(
+                messages_from_state(state)[prior_message_count:]
+            )
             write_json(run_dir / f"round_{round_index:02d}.json", records)
+            current_node = terminal_observation_job_uid(records["observation"]) or current_node
             decision = records["v2_decision"] or {}
             if not args.execute or decision.get("decision_type") in {"stop", "request_input", "complete"}:
                 break
