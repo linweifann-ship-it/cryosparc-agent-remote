@@ -294,12 +294,22 @@ async def run(args: argparse.Namespace) -> int:
     model = build_chat_model(args)
     checkpoint_path = Path(args.checkpoint_path) if args.checkpoint_path else run_dir / "langgraph_checkpoints.sqlite"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    config = {"configurable": {"thread_id": args.thread_id or run_dir.name}}
+    base_thread_id = args.thread_id or run_dir.name
     current_node = args.current_node
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
         agent = build_agent(model, mcp_tools, checkpointer)
-        write_json(run_dir / "agent.json", {"name": "cryosparc-deepagents-main", "subagents": 0, "thread_id": config["configurable"]["thread_id"], "checkpoint_path": str(checkpoint_path)})
+        write_json(run_dir / "agent.json", {"name": "cryosparc-deepagents-main", "subagents": 0, "thread_id": base_thread_id, "checkpoint_path": str(checkpoint_path)})
         for round_index in range(1, args.max_rounds + 1):
+            # The live MCP state and the terminal observation are the only
+            # cross-round inputs.  Do not reuse an agent conversation: a
+            # provider can otherwise reject a later request for an unmatched
+            # historical tool call even though that call is unrelated to the
+            # next workflow decision.
+            config = {
+                "configurable": {
+                    "thread_id": f"{base_thread_id}:round:{round_index}",
+                }
+            }
             # The checkpointer retains the whole conversation.  Capture its
             # boundary before invoking the agent so a round report cannot
             # attribute a prior decision/execution to the current turn.
@@ -338,7 +348,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--mcp-server", default="cryosparc_mcp_server.py")
     parser.add_argument("--max-rounds", type=int, default=8)
-    parser.add_argument("--thread-id", help="Stable LangGraph thread ID to resume from the run's SQLite checkpoint.")
+    parser.add_argument("--thread-id", help="Base ID used to namespace one independent LangGraph checkpoint thread per workflow round.")
     parser.add_argument("--checkpoint-path", help="Existing/new LangGraph SQLite checkpoint database; pair with --thread-id to resume.")
     parser.add_argument("--output-dir", default="reports/deepagents")
     parser.add_argument("--execute", action="store_true", help="Allow MCP live execution. The default is MCP dry-run only.")
