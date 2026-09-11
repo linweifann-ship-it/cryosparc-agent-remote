@@ -814,7 +814,7 @@ def config_from_args(args: argparse.Namespace, output_dir: Path | None = None) -
         poll_interval_seconds=args.poll_interval_seconds,
         server_python=args.server_python,
         project_dir=Path(args.project_dir),
-        mcp_server=args.mcp_server,
+        mcp_server=str(Path(args.mcp_server).resolve()),
         mcp_stdio_command=(
             shlex.split(args.mcp_stdio_command)
             if getattr(args, "mcp_stdio_command", None)
