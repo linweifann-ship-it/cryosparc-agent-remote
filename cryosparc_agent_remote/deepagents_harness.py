@@ -163,10 +163,10 @@ def round_instruction(args: argparse.Namespace, round_index: int) -> str:
             "dataset_info": load_dataset_info(args),
             "known_workflow_dirs": args.known_workflow_dir or None,
             "required_protocol": [
-                "Call get_workflow_decision_context first. Treat its live workflow state and candidate actions as authoritative.",
+                "Call get_workflow_decision_context first with the supplied dataset_info. Treat its live workflow state and candidate actions as authoritative.",
                 "Make one V2 decision using the preserved output contract and scientific/rubric rules in the system prompt.",
-                "Call validate_v2_model_decision with that exact V2 decision before any execution.",
-                f"Only if validation succeeds, call execute_v2_model_decision with dry_run={execution_mode}. Never set dry_run=false unless this run was explicitly started with --execute.",
+                "Call validate_v2_model_decision with that exact V2 decision and the supplied dataset_info before any execution.",
+                f"Only if validation succeeds, call execute_v2_model_decision with the supplied dataset_info and dry_run={execution_mode}. Never set dry_run=false unless this run was explicitly started with --execute.",
                 "For a live created job, call wait_for_job_result_package and use its terminal result as the observation. For dry run, the execution plan is the observation.",
                 "Finish with exactly the V2 decision JSON object and no Markdown. Do not invent jobs, inputs, connections, state, or an observation.",
             ],
@@ -229,7 +229,7 @@ def extract_round_records(messages: Iterable[Any]) -> dict[str, Any]:
 
 
 async def run(args: argparse.Namespace) -> int:
-    from langgraph.checkpoint.sqlite import SqliteSaver
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
     run_dir = Path(args.output_dir) / datetime.now().strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -259,7 +259,7 @@ async def run(args: argparse.Namespace) -> int:
     checkpoint_path = Path(args.checkpoint_path) if args.checkpoint_path else run_dir / "langgraph_checkpoints.sqlite"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     config = {"configurable": {"thread_id": args.thread_id or run_dir.name}}
-    with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
         agent = build_agent(model, mcp_tools, checkpointer)
         write_json(run_dir / "agent.json", {"name": "cryosparc-deepagents-main", "subagents": 0, "thread_id": config["configurable"]["thread_id"], "checkpoint_path": str(checkpoint_path)})
         for round_index in range(1, args.max_rounds + 1):

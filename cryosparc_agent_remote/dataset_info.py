@@ -4,9 +4,18 @@ from typing import Any
 
 ACQUISITION_ALIASES = {
     "psize_A": ("pixel_size_A",),
-    "accel_kv": ("accelerating_voltage_kv",),
-    "cs_mm": ("spherical_aberration_mm",),
+    "accel_kv": ("accelerating_voltage_kv", "voltage_kV", "voltage_kv"),
+    "cs_mm": ("spherical_aberration_mm", "SA_mm"),
     "total_dose_e_per_A2": ("total_exposure_dose_e_per_A2",),
+}
+
+# User-facing initial data descriptions are deliberately normalized here, at
+# the MCP boundary, rather than teaching the model a private input schema.
+# Candidate generation consumes only ``available_input_files``.
+INPUT_FILE_ALIASES = {
+    "micrograph_blob_paths": ("micrographs_data_path", "micrograph_data_path"),
+    "movie_blob_paths": ("movies_data_path", "movie_data_path"),
+    "volume_blob_path": ("volume_data_path",),
 }
 
 
@@ -30,4 +39,18 @@ def normalize_dataset_info(dataset_info: dict[str, Any]) -> dict[str, Any]:
                 if normalized.get(alias) is not None:
                     normalized[canonical] = normalized[alias]
                     break
+    files = normalized.get("available_input_files") or {}
+    if not isinstance(files, dict):
+        files = {}
+    else:
+        files = dict(files)
+    for canonical, aliases in INPUT_FILE_ALIASES.items():
+        if files.get(canonical):
+            continue
+        for alias in aliases:
+            if normalized.get(alias):
+                files[canonical] = normalized[alias]
+                break
+    if files:
+        normalized["available_input_files"] = files
     return normalized

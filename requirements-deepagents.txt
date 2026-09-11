@@ -1,6 +1,7 @@
 # Deep Agents harness dependencies.  Keep CryoSPARC/MCP dependencies in the
 # existing server environment; this file adds only the upstream agent runtime.
 deepagents>=0.5.3
+aiosqlite>=0.20
 langchain-openai>=1.0.0
 langchain-mcp-adapters>=0.2.0
 langgraph-checkpoint-sqlite>=2.0.0

@@ -2,6 +2,7 @@
 import unittest
 
 from action_registry import (
+    build_initial_import_candidates,
     execute_model_decision_payload,
     generate_candidate_actions,
     validate_model_decision_payload,
@@ -364,6 +365,24 @@ def forward_decision(**overrides):
 
 
 class ActionRegistryFixedTests(unittest.TestCase):
+    def test_raw_micrograph_path_generates_initial_import_candidate(self):
+        candidates = build_initial_import_candidates({
+            "micrographs_data_path": "/data/micrographs/*.mrc",
+            "pixel_size_A": 0.6575,
+            "voltage_kV": 300,
+            "spherical_aberration_mm": 2.7,
+            "total_exposure_dose_e_per_A2": 53,
+        })
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["job_type"], "import_micrographs")
+        self.assertEqual(candidates[0]["default_parameters"], {
+            "blob_paths": "/data/micrographs/*.mrc",
+            "psize_A": 0.6575,
+            "accel_kv": 300,
+            "cs_mm": 2.7,
+            "total_dose_e_per_A2": 53,
+        })
+
     def test_valid_forward_returns_planned_action(self):
         result = execute_model_decision_payload(
             forward_decision(),
