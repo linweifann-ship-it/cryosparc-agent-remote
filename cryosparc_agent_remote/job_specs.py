@@ -72,7 +72,10 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "interactive": False,
         "default_lane": DEFAULT_GPU_LANE,
         "parameter_template": {
-            "diameter": {"type": "number", "minimum": 0},
+            # CryoSPARC rejects a Blob Picker job whose minimum diameter is
+            # unset.  Expose that as a validator requirement so an unchanged
+            # model decision is rejected before creating an unqueueable job.
+            "diameter": {"type": "number", "minimum": 0, "required": True},
             "diameter_max": {"type": "number", "minimum": 0},
         },
     },

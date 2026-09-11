@@ -484,6 +484,22 @@ class ActionRegistryFixedTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["issues"][0]["code"], "missing_required_parameter")
 
+    def test_blob_picker_requires_model_diameter_before_job_creation(self):
+        decision = forward_decision()
+        decision["selected_actions"][0] = {
+            "job_type": "blob_picker_gpu",
+            "parameters": {},
+        }
+
+        result = validate_model_decision_payload(
+            decision,
+            candidate_actions=[],
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["issues"][0]["code"], "missing_required_parameter")
+        self.assertEqual(result["issues"][0]["path"], "selected_actions.0.parameters.diameter")
+
     def test_high_gpu_count_requires_approval(self):
         decision = forward_decision()
         decision["selected_actions"][0]["parameters"]["compute_num_gpus"] = 8
