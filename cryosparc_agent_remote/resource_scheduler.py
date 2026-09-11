@@ -294,34 +294,6 @@ def build_scheduling_plan(
     """Select queue resources without mutating the scientific decision."""
     policy = policy_for_job(job_type, spec, params, requested_lane)
     snapshot = resource_snapshot if resource_snapshot is not None else probe_cluster_resources()
-    # CPU jobs must use CryoSPARC's ordinary queue path.  Passing a GPU lane to
-    # an import/CPU job is rejected by the master API (HTTP 422), irrespective
-    # of the model's otherwise valid scientific decision.
-    if not spec.get("requires_gpu"):
-        queue = {
-            "lane": None,
-            "hostname": None,
-            "gpus": [],
-            "cluster_vars": {},
-            "will_queue": not spec.get("interactive", False),
-        }
-        resource_config = {
-            "mode": "cpu",
-            "lane": None,
-            "hostname": None,
-            "compute_num_gpus": None,
-        }
-        return {
-            "policy": policy_to_dict(policy),
-            "snapshot": snapshot,
-            "selected_lane": None,
-            "race_lanes": [],
-            "selected_resource": None,
-            "resource_config": resource_config,
-            "queue": queue,
-            "parameter_overrides": {},
-            "reason": "job_does_not_require_gpu",
-        }
     requested_gpus = requested_gpu_count(params, policy.minimum_gpus)
     selected = select_gpu_lane(snapshot, policy, requested_gpus)
     selected_lane = selected.get("partition") if selected else requested_lane or first_or_none(policy.preferred_lanes)
@@ -339,6 +311,9 @@ def build_scheduling_plan(
         "hostname": selected.get("node") if selected else queue["hostname"],
         "compute_num_gpus": requested_gpus if spec.get("requires_gpu") else None,
     }
+    if not spec.get("requires_gpu"):
+        reason = "job_does_not_require_gpu"
+        resource_config["mode"] = "cpu"
     return {
         "policy": policy_to_dict(policy),
         "snapshot": snapshot,

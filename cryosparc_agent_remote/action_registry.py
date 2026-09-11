@@ -1069,6 +1069,19 @@ def validate_action_against_candidates(
     warnings: list[ValidationIssue] = []
     path = f"selected_actions.{index}"
     candidate = candidates_by_id.get(action.action_id or "")
+    # Initial import actions are sometimes expressed by job type alone rather
+    # than by copying an MCP-generated action id.  Match the one unambiguous
+    # candidate so that fixed dataset facts reach CryoSPARC; do not select a
+    # different job or override any model-supplied parameter.
+    if candidate is None and not action.action_id:
+        matches = [
+            item for item in candidates_by_id.values()
+            if item.get("available")
+            and item.get("job_type") == action.job_type
+            and item.get("action_type") == action.action_type
+        ]
+        if len(matches) == 1:
+            candidate = matches[0]
 
     if candidate is not None:
         for field_name in ("action_type", "workflow_node_id", "job_type"):
@@ -1085,7 +1098,13 @@ def validate_action_against_candidates(
                         path=f"{path}.{field_name}",
                     )
                 )
-        parameter_template = candidate["parameter_template"]
+        parameter_template = {
+            name: {**spec}
+            for name, spec in candidate["parameter_template"].items()
+        }
+        for name, value in (candidate.get("default_parameters") or {}).items():
+            if name in parameter_template:
+                parameter_template[name]["default"] = value
         execution_mode = candidate["execution_mode"]
     else:
         parameter_template = get_parameter_template(action.job_type)
