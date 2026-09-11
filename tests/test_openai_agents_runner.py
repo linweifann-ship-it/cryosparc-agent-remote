@@ -154,9 +154,10 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
         kill.assert_called_once_with("P2", "W16", "J220", "launched")
         self.assertEqual(result[0]["job_uid"], "J220")
 
-    def test_kill_race_losers_does_not_kill_running_loser(self):
+    def test_kill_race_losers_kills_running_loser(self):
         with patch(
             "cryosparc_agent_remote.openai_agents_runner.kill_job",
+            return_value={"job_uid": "J220", "action": "kill", "success": True},
         ) as kill:
             result = kill_race_losers(
                 "P2",
@@ -165,8 +166,8 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
                 {"J220": "running", "J221": "running"},
             )
 
-        kill.assert_not_called()
-        self.assertEqual(result, [])
+        kill.assert_called_once_with("P2", "W16", "J220", "running")
+        self.assertEqual(result[0]["job_uid"], "J220")
 
     def test_cancel_physical_race_job_falls_back_to_cancel(self):
         class FakeJob:

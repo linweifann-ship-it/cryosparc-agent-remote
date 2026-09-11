@@ -564,7 +564,10 @@ def read_job_statuses(
     workspace_uid: str,
     job_uids: list[str],
 ) -> dict[str, str]:
-    from workflow_state import extract_workflow_state, find_node
+    try:
+        from .workflow_state import extract_workflow_state, find_node
+    except ImportError:  # pragma: no cover - direct script compatibility
+        from workflow_state import extract_workflow_state, find_node
 
     workflow_state = extract_workflow_state(project_uid, workspace_uid)
     statuses = {}
@@ -592,11 +595,14 @@ def kill_race_losers(
     winner_job_uid: str,
     statuses: dict[str, str],
 ) -> list[dict[str, Any]]:
-    terminal_or_running = {"completed", "running", "started", "failed", "killed"}
+    # The first non-terminal job that reaches running/started/completed wins.
+    # Every other non-terminal physical job is a resource-only duplicate and
+    # must be cancelled, including a concurrently running loser.
+    terminal_statuses = {"completed", "failed", "killed"}
     results = []
     for job_uid, raw_status in statuses.items():
         status = str(raw_status or "").lower()
-        if job_uid == winner_job_uid or status in terminal_or_running:
+        if job_uid == winner_job_uid or status in terminal_statuses:
             continue
         results.append(kill_job(project_uid, workspace_uid, job_uid, status))
     return results
@@ -608,7 +614,10 @@ def kill_job(
     job_uid: str,
     status: str,
 ) -> dict[str, Any]:
-    from cryosparc_client import cryosparc_client
+    try:
+        from .cryosparc_client import cryosparc_client
+    except ImportError:  # pragma: no cover - direct script compatibility
+        from cryosparc_client import cryosparc_client
 
     try:
         cs = cryosparc_client()
