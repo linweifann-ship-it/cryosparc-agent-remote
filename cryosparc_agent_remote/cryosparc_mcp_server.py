@@ -26,6 +26,7 @@ from v2_decision_adapter import (
 from workflow_state import extract_workflow_state
 from vision_inputs import (
     build_class_average_visual_context,
+    build_micrograph_visual_context,
     build_pick_inspection_visual_context,
 )
 from kb_bridge import call_kb_tool, get_decision_context
@@ -233,6 +234,24 @@ def get_pick_inspection_visual_context(
         job_uid=job_uid,
         max_micrographs=max_micrographs,
         max_picks_per_micrograph=max_picks_per_micrograph,
+        micrograph_root=micrograph_root,
+    )
+
+
+@mcp.tool()
+def get_micrograph_visual_context(
+    project_uid: str,
+    job_uid: str,
+    output_name: str = "exposures",
+    max_micrographs: int = 6,
+    micrograph_root: str | None = None,
+) -> dict:
+    """Return raw micrograph thumbnails and pixel scale from a completed job output."""
+    return build_micrograph_visual_context(
+        project_uid=project_uid,
+        job_uid=job_uid,
+        output_name=output_name,
+        max_micrographs=max_micrographs,
         micrograph_root=micrograph_root,
     )
 

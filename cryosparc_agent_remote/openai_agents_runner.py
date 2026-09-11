@@ -89,6 +89,7 @@ CLOSED_LOOP_MCP_TOOLS = [
     "kb_get_manual_annotations",
     "kb_get_decision_context",
     "get_class_average_visual_context",
+    "get_micrograph_visual_context",
     "get_pick_inspection_visual_context",
     "evaluate_2d_classes_with_cryosift",
     "validate_v2_model_decision",

@@ -1,9 +1,11 @@
 import unittest
 import importlib
+import os
 from unittest.mock import patch
 
 from cryosparc_agent_remote.cryosift_adapter import evaluate_2d_classes_with_cryosift
 from cryosparc_agent_remote.openai_agents_runner import CLOSED_LOOP_MCP_TOOLS
+from cryosparc_agent_remote.vision_inputs import vision_cache_dir
 
 
 class EvidenceToolIntegrationTests(unittest.TestCase):
@@ -13,6 +15,7 @@ class EvidenceToolIntegrationTests(unittest.TestCase):
             "kb_get_decision_context",
             "kb_search_cryoem_kb",
             "get_class_average_visual_context",
+            "get_micrograph_visual_context",
             "get_pick_inspection_visual_context",
             "evaluate_2d_classes_with_cryosift",
             "validate_v2_model_decision",
@@ -39,6 +42,12 @@ class EvidenceToolIntegrationTests(unittest.TestCase):
         self.assertEqual(result["job_uid"], "J99")
         self.assertIn("missing_paths", result)
 
+    def test_visual_cache_uses_writable_temp_default_and_allows_override(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(str(vision_cache_dir()), "/tmp/cryoagent/vision_inputs")
+        with patch.dict(os.environ, {"CRYOAGENT_VISION_CACHE_DIR": "/var/tmp/custom-vision"}, clear=True):
+            self.assertEqual(str(vision_cache_dir()), "/var/tmp/custom-vision")
+
     def test_mcp_server_defines_evidence_tool_entrypoints(self):
         try:
             mcp_server = importlib.import_module("cryosparc_agent_remote.cryosparc_mcp_server")
@@ -51,6 +60,7 @@ class EvidenceToolIntegrationTests(unittest.TestCase):
             "kb_get_decision_context",
             "kb_search_cryoem_kb",
             "get_class_average_visual_context",
+            "get_micrograph_visual_context",
             "get_pick_inspection_visual_context",
             "evaluate_2d_classes_with_cryosift",
         ):

@@ -12,6 +12,11 @@ from PIL import Image, ImageDraw, ImageFont
 from cryosparc_client import cryosparc_client
 
 
+def vision_cache_dir() -> Path:
+    """Return an operator-overridable cache directory that is writable by default."""
+    return Path(os.getenv("CRYOAGENT_VISION_CACHE_DIR", "/tmp/cryoagent/vision_inputs"))
+
+
 def build_class_average_visual_context(
     project_uid: str,
     job_uid: str,
@@ -57,12 +62,7 @@ def build_class_average_visual_context(
     buffer = io.BytesIO()
     sheet.save(buffer, format="PNG", optimize=True)
     image_bytes = buffer.getvalue()
-    cache_dir = Path(
-        os.getenv(
-            "CRYOAGENT_VISION_CACHE_DIR",
-            "/home/lisongyang/cryoagent/logs/vision_inputs",
-        )
-    )
+    cache_dir = vision_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached_path = cache_dir / f"{project_uid}_{job_uid}_class_averages.png"
     cached_path.write_bytes(image_bytes)
@@ -103,6 +103,84 @@ def normalize_class_image(array: Any, size: int) -> Image.Image:
         scaled = np.clip((image - low) / (high - low) * 255, 0, 255).astype(np.uint8)
     tile = Image.fromarray(scaled, mode="L").convert("RGB")
     return tile.resize((size, size), Image.Resampling.BILINEAR)
+
+
+def build_micrograph_visual_context(
+    project_uid: str,
+    job_uid: str,
+    output_name: str = "exposures",
+    max_micrographs: int = 6,
+    tile_size: int = 512,
+    micrograph_root: str | None = None,
+) -> dict[str, Any]:
+    """Return raw micrograph thumbnails and acquisition scale, without picks."""
+    cs = cryosparc_client()
+    project = cs.find_project(project_uid)
+    job = project.find_job(job_uid)
+    micrographs = job.load_output(output_name)
+    mic_paths = list(micrographs["micrograph_blob/path"])
+    if not mic_paths:
+        raise ValueError(f"Job {job_uid} output {output_name!r} has no micrographs.")
+    pixel_sizes = list(micrographs.get("micrograph_blob/psize_A", []))
+    if not pixel_sizes:
+        pixel_sizes = list(micrographs.get("mscope_params/psize_A", []))
+    selected = np.linspace(0, len(mic_paths) - 1, min(max_micrographs, len(mic_paths))).round().astype(int)
+    chosen = sorted(set(int(index) for index in selected))
+    columns = min(3, len(chosen))
+    label_height = 42
+    rows = math.ceil(len(chosen) / columns)
+    sheet = Image.new("RGB", (columns * tile_size, rows * (tile_size + label_height)), "white")
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    panels = []
+    for panel_index, index in enumerate(chosen):
+        row, col = divmod(panel_index, columns)
+        x0, y0 = col * tile_size, row * (tile_size + label_height)
+        source_path = str(mic_paths[index])
+        sheet.paste(
+            Image.fromarray(
+                normalize_micrograph_image(
+                    load_micrograph_image(project, source_path, micrograph_root), tile_size
+                ),
+                mode="RGB",
+            ),
+            (x0, y0 + label_height),
+        )
+        pixel_size = float(pixel_sizes[index]) if index < len(pixel_sizes) else None
+        label = f"micrograph_id={panel_index}"
+        if pixel_size is not None:
+            label += f"  pixel_size_A={pixel_size:g}"
+        draw.rectangle((x0, y0, x0 + tile_size - 1, y0 + label_height - 1), fill="black")
+        draw.text((x0 + 5, y0 + 6), label, fill="white", font=font)
+        panels.append({
+            "micrograph_id": panel_index,
+            "source_path": source_path,
+            "pixel_size_A": pixel_size,
+            "image_width_px": tile_size,
+            "image_width_A": pixel_size * tile_size if pixel_size is not None else None,
+        })
+    buffer = io.BytesIO()
+    sheet.save(buffer, format="PNG", optimize=True)
+    image_bytes = buffer.getvalue()
+    cache_dir = vision_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_path = cache_dir / f"{project_uid}_{job_uid}_{output_name}_micrographs.png"
+    cached_path.write_bytes(image_bytes)
+    return {
+        "kind": "raw_micrograph",
+        "source": {"project_uid": project_uid, "job_uid": job_uid, "output_name": output_name},
+        "image_count": len(panels),
+        "representative_sampling": "evenly_spaced",
+        "panels": panels,
+        "contact_sheet": {
+            "mime_type": "image/png",
+            "local_path": str(cached_path),
+            "data_url": f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}",
+            "columns": columns,
+            "tile_size": tile_size,
+            "label_format": "micrograph_id=<integer> pixel_size_A=<number>",
+        },
+    }
 
 
 
@@ -191,7 +269,7 @@ def build_pick_inspection_visual_context(
     buffer = io.BytesIO()
     sheet.save(buffer, format="PNG", optimize=True)
     image_bytes = buffer.getvalue()
-    cache_dir = Path(os.getenv("CRYOAGENT_VISION_CACHE_DIR", "/home/lisongyang/cryoagent/logs/vision_inputs"))
+    cache_dir = vision_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached_path = cache_dir / f"{project_uid}_{job_uid}_pick_inspection.png"
     cached_path.write_bytes(image_bytes)
