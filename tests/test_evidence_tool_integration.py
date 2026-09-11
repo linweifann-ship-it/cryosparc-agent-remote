@@ -4,7 +4,7 @@ import os
 from unittest.mock import patch
 
 from cryosparc_agent_remote.cryosift_adapter import evaluate_2d_classes_with_cryosift
-from cryosparc_agent_remote.openai_agents_runner import CLOSED_LOOP_MCP_TOOLS
+from cryosparc_agent_remote.openai_agents_runner import CLOSED_LOOP_MCP_TOOLS, STATIC_MCP_PROTOCOL
 from cryosparc_agent_remote.vision_inputs import vision_cache_dir
 
 
@@ -24,6 +24,7 @@ class EvidenceToolIntegrationTests(unittest.TestCase):
         }
 
         self.assertTrue(expected_tools.issubset(set(CLOSED_LOOP_MCP_TOOLS)))
+        self.assertIn("get_micrograph_visual_context", STATIC_MCP_PROTOCOL["required_mcp_sequence"][1])
 
     def test_cryosift_not_configured_returns_structured_status(self):
         with patch.dict(
