@@ -209,6 +209,23 @@ class ModelInputBuilderTests(unittest.TestCase):
         self.assertEqual(result["current_state"]["last_node_status"], "not_started")
         self.assertEqual(result["dataset_info"]["blob_paths"], dataset_info["blob_paths"])
 
+    def test_not_started_payload_preserves_normalized_movies_and_defaults(self):
+        empty_state = workflow_state("completed")
+        empty_state["nodes"] = []
+        empty_state["workflow_status"] = "not_started"
+        with patch("model_input_builder.extract_workflow_state", return_value=empty_state):
+            result = build_model_input_payload("P2", "W16", dataset_info={
+                "movies_data_path": "/data/movies/*.tif", "pixel_size_A": 0.6575,
+                "voltage_kV": 300, "spherical_aberration_mm": 2.7,
+                "total_exposure_dose_e_per_A2": 53,
+            })
+        dataset = result["dataset_info"]
+        self.assertEqual(dataset["available_input_files"]["movie_blob_paths"], "/data/movies/*.tif")
+        self.assertEqual(
+            [dataset[key] for key in ("psize_A", "accel_kv", "cs_mm", "total_dose_e_per_A2")],
+            [0.6575, 300, 2.7, 53],
+        )
+
     def test_known_workflow_retriever_returns_normalized_steps(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "EMPIAR-12099_workflow.json"

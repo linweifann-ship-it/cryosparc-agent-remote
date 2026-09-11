@@ -14,6 +14,8 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
+from dataset_info import normalize_dataset_info
+
 
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_BASE_URL = "https://api.ofox.ai/v1"
@@ -54,8 +56,8 @@ STATIC_MCP_PROTOCOL = {
     "required_mcp_sequence": [
         "get_workflow_decision_context",
         "Optionally use kb_* tools, get_class_average_visual_context, get_pick_inspection_visual_context, or evaluate_2d_classes_with_cryosift when extra evidence is needed.",
-        "validate_v2_model_decision when you have a candidate decision",
-        "execute_v2_model_decision with dry_run=false for executable decisions",
+        "validate_v2_model_decision with the same supplied dataset_info when you have a candidate decision",
+        "execute_v2_model_decision with the same supplied dataset_info and dry_run=false for executable decisions",
         "wait_for_job_result_package for created jobs",
     ],
     "output_contract": STATIC_OUTPUT_CONTRACT,
@@ -778,7 +780,10 @@ def config_from_args(args: argparse.Namespace, output_dir: Path | None = None) -
     if not args.api_key:
         raise ValueError("Set OPENAI_API_KEY or pass --api-key.")
     run_id = args.run_id or uuid.uuid4().hex
-    dataset_info = json.loads(Path(args.dataset_json_file).read_text()) if args.dataset_json_file else json.loads(args.dataset_json)
+    dataset_info = normalize_dataset_info(
+        json.loads(Path(args.dataset_json_file).read_text())
+        if args.dataset_json_file else json.loads(args.dataset_json)
+    )
     return AgentsRunConfig(
         project_uid=args.project,
         workspace_uid=args.workspace,

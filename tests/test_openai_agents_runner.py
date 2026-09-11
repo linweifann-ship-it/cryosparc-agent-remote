@@ -271,6 +271,22 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
         self.assertEqual(config.workspace_uid, "W16")
         self.assertFalse(config.prompt_cache_options_enabled)
 
+    def test_dataset_json_file_is_normalized_before_model_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset_path = Path(tmp) / "dataset.json"
+            dataset_path.write_text(json.dumps({"raw_movies": ["/data/movies/*.tif"], "voltage_kV": 300}))
+            args = SimpleNamespace(
+                project="P2", workspace="W1", start_node=None, model="gpt-5.6-sol",
+                api_base="https://api.ofox.ai/v1", api_key="sk-test", run_id="run-x", output_dir=tmp,
+                dataset_json="{}", dataset_json_file=str(dataset_path), known_workflow_dir=[], max_steps=1,
+                max_turns_per_step=2, wait_timeout_seconds=3, poll_interval_seconds=1, server_python="python",
+                project_dir="/repo", mcp_server="cryosparc_mcp_server.py", mcp_stdio_command=None,
+                force_chat_completions=True, disable_prompt_cache_options=False,
+            )
+            config = config_from_args(args)
+        self.assertEqual(config.dataset_info["available_input_files"]["movie_blob_paths"], ["/data/movies/*.tif"])
+        self.assertEqual(config.dataset_info["accel_kv"], 300)
+
 
 if __name__ == "__main__":
     unittest.main()

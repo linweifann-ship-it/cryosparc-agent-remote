@@ -1,0 +1,7 @@
+{
+  "raw_movies": ["/data/movies/*.tif"],
+  "pixel_size_A": 0.6575,
+  "voltage_kV": 300,
+  "spherical_aberration_mm": 2.7,
+  "total_exposure_dose_e_per_A2": 53
+}

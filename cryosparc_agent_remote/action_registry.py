@@ -30,6 +30,7 @@ def get_candidate_actions(
     dataset_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read the current workflow and return selectable next actions."""
+    dataset_info = normalize_dataset_info(dataset_info or {})
     workflow_state = extract_workflow_state(project_uid, workspace_uid)
     current_node = (
         find_node(workflow_state, current_node_id)
@@ -48,7 +49,7 @@ def get_candidate_actions(
         include_registry=True,
     )
     if canonical_current_node_id is None:
-        candidate_actions.extend(build_initial_import_candidates(dataset_info or {}))
+        candidate_actions.extend(build_initial_import_candidates(dataset_info))
     if current_node and current_node["status"] in {"failed", "killed"}:
         candidate_actions.append(build_retry_candidate(current_node))
     quality_assessment = (

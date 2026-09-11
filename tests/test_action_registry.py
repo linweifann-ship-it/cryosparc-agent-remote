@@ -2,6 +2,7 @@
 import unittest
 
 from action_registry import (
+    build_initial_import_candidates,
     execute_model_decision_payload,
     generate_candidate_actions,
     get_candidate_actions,
@@ -356,6 +357,21 @@ def forward_decision(**overrides):
 
 
 class ActionRegistryFixedTests(unittest.TestCase):
+    def test_raw_movies_list_generates_import_candidate_with_acquisition_defaults(self):
+        candidates = build_initial_import_candidates({
+            "raw_movies": ["/data/movies/*.tif"],
+            "pixel_size_A": 0.6575,
+            "voltage_kV": 300,
+            "spherical_aberration_mm": 2.7,
+            "total_exposure_dose_e_per_A2": 53,
+        })
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["job_type"], "import_movies")
+        self.assertEqual(candidates[0]["default_parameters"], {
+            "blob_paths": "/data/movies/*.tif", "psize_A": 0.6575,
+            "accel_kv": 300, "cs_mm": 2.7, "total_dose_e_per_A2": 53,
+        })
+
     def test_empty_micrographs_dataset_generates_import_candidate(self):
         workflow_state = {
             "schema_version": "1.0",
