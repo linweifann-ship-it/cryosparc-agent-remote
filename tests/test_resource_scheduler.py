@@ -94,7 +94,7 @@ class ResourceSchedulerTests(unittest.TestCase):
         self.assertEqual(plan["selected_lane"], "g8m192_4090_slurm")
         self.assertEqual(plan["selected_resource"]["free_gpus"], 4)
 
-    def test_cpu_import_does_not_use_gpu_execution_lane(self):
+    def test_cpu_import_uses_default_execution_lane(self):
         plan = build_scheduling_plan(
             "import_micrographs",
             get_job_spec("import_micrographs"),
@@ -102,8 +102,8 @@ class ResourceSchedulerTests(unittest.TestCase):
             resource_snapshot=snapshot(g4090_free=4, h20_free=8),
         )
 
-        self.assertIsNone(plan["selected_lane"])
-        self.assertIsNone(plan["queue"]["lane"])
+        self.assertEqual(plan["selected_lane"], "g8m192_4090_slurm")
+        self.assertEqual(plan["queue"]["lane"], "g8m192_4090_slurm")
         self.assertEqual(plan["queue"]["gpus"], [])
         self.assertEqual(plan["resource_config"]["mode"], "cpu")
         self.assertEqual(plan["reason"], "job_does_not_require_gpu")

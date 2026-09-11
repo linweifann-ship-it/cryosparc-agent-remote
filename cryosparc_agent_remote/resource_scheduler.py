@@ -295,10 +295,8 @@ def build_scheduling_plan(
     policy = policy_for_job(job_type, spec, params, requested_lane)
     snapshot = resource_snapshot if resource_snapshot is not None else probe_cluster_resources()
     requested_gpus = requested_gpu_count(params, policy.minimum_gpus)
-    selected = select_gpu_lane(snapshot, policy, requested_gpus) if spec.get("requires_gpu") else None
-    selected_lane = (
-        selected.get("partition") if selected else requested_lane or first_or_none(policy.preferred_lanes)
-    ) if spec.get("requires_gpu") else None
+    selected = select_gpu_lane(snapshot, policy, requested_gpus)
+    selected_lane = selected.get("partition") if selected else requested_lane or first_or_none(policy.preferred_lanes)
     queue = {
         "lane": selected_lane,
         "hostname": None,
