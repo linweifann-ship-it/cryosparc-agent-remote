@@ -14,7 +14,7 @@ ACQUISITION_ALIASES = {
 # Candidate generation consumes only ``available_input_files``.
 INPUT_FILE_ALIASES = {
     "micrograph_blob_paths": ("micrographs_data_path", "micrograph_data_path"),
-    "movie_blob_paths": ("movies_data_path", "movie_data_path"),
+    "movie_blob_paths": ("movies_data_path", "movie_data_path", "raw_movies"),
     "volume_blob_path": ("volume_data_path",),
 }
 

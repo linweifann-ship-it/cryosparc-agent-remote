@@ -615,9 +615,12 @@ async def main_async() -> None:
 
 
 def load_dataset_info(args: argparse.Namespace) -> dict[str, Any]:
-    if args.dataset_json_file:
-        return json.loads(Path(args.dataset_json_file).read_text())
-    return json.loads(args.dataset_json)
+    from dataset_info import normalize_dataset_info
+
+    return normalize_dataset_info(
+        json.loads(Path(args.dataset_json_file).read_text())
+        if args.dataset_json_file else json.loads(args.dataset_json)
+    )
 
 
 def build_autonomous_prompt(

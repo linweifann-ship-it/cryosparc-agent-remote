@@ -39,6 +39,10 @@ class DatasetInfoTests(unittest.TestCase):
         self.assertEqual(result["cs_mm"], 2.7)
         self.assertEqual(result["total_dose_e_per_A2"], 53)
 
+    def test_raw_movies_list_is_normalized_to_a_dictionary_file_context(self):
+        result = normalize_dataset_info({"available_input_files": ["bad"], "raw_movies": ["/data/movies/*.tif"]})
+        self.assertEqual(result["available_input_files"], {"movie_blob_paths": ["/data/movies/*.tif"]})
+
 
 if __name__ == "__main__":
     unittest.main()

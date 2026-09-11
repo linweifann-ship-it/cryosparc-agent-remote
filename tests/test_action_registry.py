@@ -365,6 +365,12 @@ def forward_decision(**overrides):
 
 
 class ActionRegistryFixedTests(unittest.TestCase):
+    def test_raw_movies_list_generates_import_movies_candidate(self):
+        candidates = build_initial_import_candidates({"raw_movies": ["/data/movies/*.tif"]})
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["job_type"], "import_movies")
+        self.assertEqual(candidates[0]["default_parameters"]["blob_paths"], "/data/movies/*.tif")
+
     def test_raw_micrograph_path_generates_initial_import_candidate(self):
         candidates = build_initial_import_candidates({
             "micrographs_data_path": "/data/micrographs/*.mrc",
