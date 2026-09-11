@@ -79,6 +79,12 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             [{"project_uid": None, "workspace_uid": None, "job_uid": "J9", "job_type": "import_movies", "status": "queued", "queued": None}],
         )
 
+    def test_extract_created_jobs_reads_json_encoded_mcp_output(self):
+        event = {"new_items": [{"output": {"text": json.dumps({
+            "job_uid": "J10", "job_type": "import_micrographs", "status": "queued"
+        })}}]}
+        self.assertEqual(extract_created_jobs(event)[0]["job_uid"], "J10")
+
     def test_extract_created_jobs_collapses_race_physical_jobs_to_logical_step(self):
         event = {
             "new_items": [

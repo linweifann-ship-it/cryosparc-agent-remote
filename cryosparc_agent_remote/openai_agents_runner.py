@@ -19,7 +19,9 @@ DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_BASE_URL = "https://api.ofox.ai/v1"
 DEFAULT_SERVER_PYTHON = "/ssd1/linweifan/miniforge3/envs/cryosparc-agent/bin/python"
 DEFAULT_PROJECT_DIR = "/ssd1/linweifan/cryosparc_agent"
-DEFAULT_MCP_SERVER = "cryosparc_mcp_server.py"
+# The repository ships the stdio server inside the package, not at the project
+# root. Keep the default runnable from a fresh checkout or copied deployment.
+DEFAULT_MCP_SERVER = "cryosparc_agent_remote/cryosparc_mcp_server.py"
 
 STATIC_AGENT_INSTRUCTIONS = (
     "You are the only workflow and scientific decision maker for an autonomous CryoSPARC "
@@ -71,12 +73,6 @@ STATIC_MCP_PROTOCOL = {
         "select_2d": "Use supplied class averages, class counts, and statistics to retain structurally suitable classes and reject clear junk, contamination, aggregation, background, or misalignment. Multiple Select 2D steps are allowed when MCP exposes them.",
         "human_review": "A traditionally manual step is not automatically human-only when sufficient machine-readable or visual evidence is supplied. Respect MCP-required human gates; otherwise stop rather than guess when evidence is insufficient.",
     },
-    "failure_and_science_rules": [
-        "Base recovery only on real MCP execution results or observations. Do not repeat an unchanged failed action without new evidence or a legal changed parameter or input.",
-        "Respect scientific dependencies: CTF estimation normally precedes CTF-dependent picking; assess available pick QC before large extraction; assess available 2D class QC before 3D reconstruction; refinement requires a valid volume and compatible particles.",
-        "Completed means computation succeeded, not scientific quality. Weigh metrics, images, counts, and observations together; particle count alone is not quality, and clearly poor 2D classes must not be retained merely to increase count.",
-        "Inspect Picks and Select 2D are high-value QC checkpoints, not unconditional gates when existing evidence supports another scientifically justified path.",
-    ],
 }
 
 CLOSED_LOOP_MCP_TOOLS = [
@@ -461,7 +457,19 @@ def append_tool_events(output_dir: Path, step: int, event: dict[str, Any]) -> No
 
 def extract_created_jobs(event: dict[str, Any]) -> list[dict[str, Any]]:
     jobs = []
-    for item in walk(event):
+    values = list(walk(event))
+    # Agents SDK serializes MCP tool output as text. Decode JSON tool payloads
+    # before extracting jobs so the round controller can wait and feed terminal
+    # observations into the next Model round.
+    for value in list(values):
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(decoded, (dict, list)):
+                values.extend(walk(decoded))
+    for item in values:
         if isinstance(item, dict) and item.get("logical_workflow_step") and item.get("logical_job"):
             logical = item["logical_job"]
             jobs.append({

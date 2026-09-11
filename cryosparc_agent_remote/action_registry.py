@@ -1,7 +1,5 @@
 # Builds candidate CryoSPARC actions, validates model decisions, and plans safe execution.
 from typing import Any
-import math
-import os
 
 from schemas import (
     Action,
@@ -228,14 +226,6 @@ def generate_candidate_actions(
         candidates = merge_candidates(candidates, registry_actions)
         blocked = merge_candidates(blocked, registry_blocked)
 
-    candidates = [
-        apply_auto_select_2d_policy(action, workflow_state)
-        for action in candidates
-    ]
-    blocked = [
-        apply_auto_select_2d_policy(action, workflow_state)
-        for action in blocked
-    ]
     policy = infer_current_stage(
         workflow_state["nodes"],
         current_node_id=current_node["workflow_node_id"],
@@ -245,71 +235,6 @@ def generate_candidate_actions(
     candidates.sort(key=lambda action: action["action_id"])
     blocked.sort(key=lambda action: action["action_id"])
     return candidates, blocked
-
-
-def apply_auto_select_2d_policy(
-    action: dict[str, Any],
-    workflow_state: dict[str, Any],
-) -> dict[str, Any]:
-    """Make select_2D non-interactive with a temporary class-count policy."""
-    if action.get("job_type") != "select_2D":
-        return action
-    raw_fraction = os.getenv("CRYOAGENT_AUTO_SELECT_2D_FRACTION", "0.85")
-    try:
-        fraction = float(raw_fraction)
-    except ValueError:
-        return action
-    if not 0 < fraction <= 1:
-        return action
-    class_count = class_average_count(action, workflow_state)
-    if class_count is None:
-        return action
-    keep_count = max(1, min(class_count, int(math.ceil(class_count * fraction))))
-    selected = ",".join(str(index) for index in range(keep_count))
-    enriched = dict(action)
-    template = dict(enriched.get("parameter_template") or {})
-    template["selected_templates"] = {"type": "string", "default": selected}
-    enriched["parameter_template"] = template
-    defaults = dict(enriched.get("default_parameters") or {})
-    defaults["selected_templates"] = selected
-    enriched["default_parameters"] = defaults
-    enriched["execution_mode"] = "create_job"
-    enriched["approval_required"] = False
-    enriched["approval_reasons"] = []
-    enriched["auto_policy"] = {
-        "name": "select_2d_class_fraction",
-        "fraction": fraction,
-        "class_count": class_count,
-        "selected_class_count": keep_count,
-        "selection_order": "class_index",
-        "quality_ranked": False,
-        "note": "Temporary deterministic selection until image-aware class ranking is available.",
-    }
-    metadata = dict(enriched.get("job_spec_metadata") or {})
-    metadata.update({"interactive": False, "requires_approval": False})
-    enriched["job_spec_metadata"] = metadata
-    enriched["description"] = (
-        f"Automatically select {keep_count}/{class_count} 2D classes "
-        f"({fraction:.0%} target by class count)."
-    )
-    return enriched
-
-
-def class_average_count(
-    action: dict[str, Any],
-    workflow_state: dict[str, Any],
-) -> int | None:
-    """Find the available class-average count for a select_2D candidate."""
-    template_sources = (action.get("required_inputs") or {}).get("templates") or []
-    for source in template_sources:
-        node = find_node(workflow_state, source.get("source_job_uid", ""))
-        if node is None:
-            continue
-        output = node.get("outputs", {}).get(source.get("source_output")) or {}
-        count = output.get("num_items")
-        if isinstance(count, int) and count > 0:
-            return count
-    return None
 
 
 def build_synthetic_next_actions(
@@ -840,6 +765,25 @@ def execute_model_decision_payload(
             "issues": [],
             "warnings": validation["warnings"],
             "message": "Additional input is required; no CryoSPARC job was created or queued.",
+        }
+
+    if validation["decision_type"] == "stop":
+        # A stop decision has no CryoSPARC action.  In particular, do not pass
+        # its display-only plan entry into execute_job_action(), which expects
+        # job fields such as connections.
+        return {
+            "success": True,
+            "dry_run": False,
+            "execution_mode": "model_stop",
+            "model_visible": True,
+            "next_model_input": None,
+            "decision_type": "stop",
+            "validation": validation,
+            "execution_plan": execution_plan,
+            "execution_results": [],
+            "issues": [],
+            "warnings": validation["warnings"],
+            "message": "Model stop accepted; no CryoSPARC job was created or changed.",
         }
 
     if not project_uid or not workspace_uid:

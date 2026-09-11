@@ -1,5 +1,6 @@
 # Fixed dry-run tests for model decision validation and planning.
 import unittest
+import unittest.mock
 
 from action_registry import (
     execute_model_decision_payload,
