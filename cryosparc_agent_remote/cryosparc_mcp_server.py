@@ -497,12 +497,19 @@ def apply_inspect_parameter_guard(
         for action in decision["selected_actions"]:
             if isinstance(action, dict) and action.get("job_type") == "inspect_picks_v2":
                 raw_parameters.update(action.get("parameters") or {})
-    filtering_keys = {
+    # ``keep_threshold`` and its companion ``lpower_target`` only configure
+    # the auto-cluster path.  By themselves they do not invoke it and do not
+    # make CryoSPARC's interactive Inspect Picks job finish automatically.
+    # Accept only an actual automatic mode or one of CryoSPARC's documented
+    # direct score-threshold parameters.
+    direct_threshold_keys = {
         "ncc_score_thresh", "lpower_thresh_min", "lpower_thresh_max",
-        "curv_thresh", "sinu_thresh", "do_auto_cluster", "keep_threshold",
+        "curv_thresh", "sinu_thresh",
     }
-    chosen = filtering_keys.intersection(raw_parameters)
-    if chosen and not (chosen == {"do_auto_cluster"} and raw_parameters.get("do_auto_cluster") is False):
+    chosen_direct_threshold = any(
+        raw_parameters.get(key) is not None for key in direct_threshold_keys
+    )
+    if raw_parameters.get("do_auto_cluster") is True or chosen_direct_threshold:
         return validation
     result = dict(validation)
     result["success"] = False

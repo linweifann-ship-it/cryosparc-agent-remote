@@ -3,6 +3,7 @@ import base64
 import io
 import math
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -191,7 +192,13 @@ def build_pick_inspection_visual_context(
     buffer = io.BytesIO()
     sheet.save(buffer, format="PNG", optimize=True)
     image_bytes = buffer.getvalue()
-    cache_dir = Path(os.getenv("CRYOAGENT_VISION_CACHE_DIR", "/home/lisongyang/cryoagent/logs/vision_inputs"))
+    # The MCP server can run as a different account from the historical agent
+    # service.  Keep the optional override, but make the default writable for
+    # the process that is actually producing the visual evidence.
+    cache_dir = Path(os.getenv(
+        "CRYOAGENT_VISION_CACHE_DIR",
+        str(Path(tempfile.gettempdir()) / "cryoagent_vision_inputs"),
+    ))
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached_path = cache_dir / f"{project_uid}_{job_uid}_pick_inspection.png"
     cached_path.write_bytes(image_bytes)
