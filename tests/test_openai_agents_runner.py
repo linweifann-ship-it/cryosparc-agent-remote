@@ -83,6 +83,19 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
             {"spherical_aberration_mm": 2.7},
         )
 
+    def test_step_input_omits_cache_marker_when_cache_options_are_disabled(self):
+        config = AgentsRunConfig(
+            project_uid="P2", workspace_uid="W1", start_node=None, model="m",
+            base_url="u", api_key="k", run_id="r", output_dir=Path("runs/r"),
+            dataset_info={}, known_workflow_dirs=[], max_steps=1, max_turns_per_step=1,
+            wait_timeout_seconds=1, poll_interval_seconds=1, server_python="python",
+            project_dir=Path("/repo"), mcp_server="server.py", mcp_stdio_command=None,
+            use_responses_api=True, prompt_cache_options_enabled=False,
+        )
+
+        protocol_content = build_step_input(config, None, 1)[1]["content"][0]
+        self.assertNotIn("prompt_cache_breakpoint", protocol_content)
+
     def test_extract_created_jobs_deduplicates_nested_job_packages(self):
         event = {
             "new_items": [

@@ -146,22 +146,22 @@ def build_step_input(
         },
     }
     static_content_type = "input_text" if config.use_responses_api else "text"
+    static_protocol_content = {
+        "type": static_content_type,
+        "text": json.dumps(
+            STATIC_MCP_PROTOCOL,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+    if config.prompt_cache_options_enabled:
+        static_protocol_content["prompt_cache_breakpoint"] = {"mode": "explicit"}
     return [
         {"role": "system", "content": STATIC_AGENT_INSTRUCTIONS},
         {
             "role": "system",
-            "content": [
-                {
-                    "type": static_content_type,
-                    "text": json.dumps(
-                        STATIC_MCP_PROTOCOL,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                    "prompt_cache_breakpoint": {"mode": "explicit"},
-                }
-            ],
+            "content": [static_protocol_content],
         },
         {
             "role": "user",
