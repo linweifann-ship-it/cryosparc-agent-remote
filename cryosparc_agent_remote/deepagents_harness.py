@@ -211,16 +211,59 @@ def decode_tool_content(content: Any) -> Any:
     return content
 
 
-def terminal_observation_job_uid(observation: Any) -> str | None:
-    """Return only the terminal Job UID supplied by MCP observation."""
-    package = decode_tool_content(observation)
+def created_job_uids(execution_result: Any) -> list[str]:
+    """Return live-created Job UIDs from an MCP execution result.
+
+    This is intentionally limited to ``execution_results`` rather than every
+    ``job_uid`` in the payload: candidate context can legitimately mention
+    parent and sibling jobs.
+    """
+    package = decode_tool_content(execution_result)
     if not isinstance(package, dict):
-        return None
-    if package.get("ready_for_model") and package.get("status") in {
-        "completed", "failed", "killed",
-    }:
-        job_uid = package.get("job_uid")
-        return job_uid if isinstance(job_uid, str) else None
+        return []
+
+    found: list[str] = []
+
+    def visit(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        results = value.get("execution_results")
+        if isinstance(results, list):
+            for item in results:
+                if isinstance(item, dict) and item.get("success"):
+                    job_uid = item.get("job_uid")
+                    if isinstance(job_uid, str) and job_uid not in found:
+                        found.append(job_uid)
+        nested = value.get("execution_result")
+        if isinstance(nested, dict):
+            visit(nested)
+
+    visit(package)
+    return found
+
+
+def terminal_observation_job_uid(
+    observation: Any, execution_result: Any = None
+) -> str | None:
+    """Return a terminal Job UID without losing DeepAgents-offloaded results.
+
+    FilesystemMiddleware stores very large terminal MCP packages outside the
+    message stream.  An active status is compact, so an offload notice from a
+    job-result tool is evidence that the terminal package was returned.  In
+    that case the corresponding singleton created Job UID is authoritative;
+    it does not infer a scientific next step.
+    """
+    package = decode_tool_content(observation)
+    if isinstance(package, dict):
+        if package.get("ready_for_model") and package.get("status") in {
+            "completed", "failed", "killed",
+        }:
+            job_uid = package.get("job_uid")
+            return job_uid if isinstance(job_uid, str) else None
+    if isinstance(package, str) and "Tool result too large" in package:
+        job_uids = created_job_uids(execution_result)
+        if len(job_uids) == 1:
+            return job_uids[0]
     return None
 
 
@@ -321,7 +364,9 @@ async def run(args: argparse.Namespace) -> int:
                 messages_from_state(state)[prior_message_count:]
             )
             write_json(run_dir / f"round_{round_index:02d}.json", records)
-            current_node = terminal_observation_job_uid(records["observation"]) or current_node
+            current_node = terminal_observation_job_uid(
+                records["observation"], records["execution_result"]
+            ) or current_node
             decision = records["v2_decision"] or {}
             if not args.execute or decision.get("decision_type") in {"stop", "request_input", "complete"}:
                 break

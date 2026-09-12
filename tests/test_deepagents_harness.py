@@ -44,7 +44,8 @@ class DeepAgentsRoundStateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cryosparc_agent_remote"))
-        from deepagents_harness import terminal_observation_job_uid
+        from deepagents_harness import created_job_uids, terminal_observation_job_uid
+        cls.created_job_uids = staticmethod(created_job_uids)
         cls.terminal_observation_job_uid = staticmethod(terminal_observation_job_uid)
 
     def test_terminal_mcp_observation_advances_current_node(self):
@@ -57,6 +58,25 @@ class DeepAgentsRoundStateTests(unittest.TestCase):
     def test_active_mcp_observation_does_not_advance_current_node(self):
         observation = '{"ready_for_model": false, "status": "running", "job_uid": "J253"}'
         self.assertIsNone(self.terminal_observation_job_uid(observation))
+
+    def test_offloaded_terminal_observation_advances_to_created_job(self):
+        observation = "Tool result too large, the result was saved in the filesystem"
+        execution = [{"type": "text", "text": '''{
+          "execution_result": {"execution_results": [
+            {"success": true, "job_uid": "J278"}
+          ]}
+        }'''}]
+        self.assertEqual(self.created_job_uids(execution), ["J278"])
+        self.assertEqual(
+            self.terminal_observation_job_uid(observation, execution), "J278"
+        )
+
+    def test_offloaded_multi_job_observation_does_not_choose_a_cursor(self):
+        observation = "Tool result too large, the result was saved in the filesystem"
+        execution = '{"execution_results": [' \
+            '{"success": true, "job_uid": "J278"},' \
+            '{"success": true, "job_uid": "J279"}]}'
+        self.assertIsNone(self.terminal_observation_job_uid(observation, execution))
 
 
 if __name__ == "__main__":

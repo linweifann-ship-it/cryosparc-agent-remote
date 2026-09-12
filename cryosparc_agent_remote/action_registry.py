@@ -292,6 +292,26 @@ def apply_hard_workflow_gates(
     """Enforce mandatory inspection and finite box-size trial stages."""
     gated: list[dict[str, Any]] = []
     job_type = current_node.get("job_type")
+    pending_picker = latest_uninspected_picker(workflow_state)
+    if (
+        pending_picker is not None
+        and job_number(pending_picker.get("cryosparc_job_uid", ""))
+        > job_number(current_node.get("cryosparc_job_uid", ""))
+    ):
+        # Never execute an action generated from a stale cursor while a newer
+        # completed picker is waiting for mandatory QC.  The harness should
+        # advance its cursor from the terminal observation; this is a
+        # fail-closed backstop, not a replacement workflow decision.
+        for action in candidates:
+            gated.append({
+                **action,
+                "available": False,
+                "blocked_by": list(action.get("blocked_by") or []) + [
+                    "Mandatory Inspect Picks gate is pending on newer job "
+                    f"{pending_picker['cryosparc_job_uid']}; refresh workflow state."
+                ],
+            })
+        return [], gated
     if inspect_picks_required(workflow_state, current_node):
         inspection = [
             action for action in candidates
@@ -374,6 +394,15 @@ def inspect_picks_required(
         if picker_uid in parent_uids or picker_uid in source_uids:
             return False
     return True
+
+
+def latest_uninspected_picker(workflow_state: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the newest completed picker that has not passed Inspect Picks."""
+    pending = [
+        node for node in workflow_state.get("nodes") or []
+        if node.get("status") == "completed" and inspect_picks_required(workflow_state, node)
+    ]
+    return max(pending, key=lambda node: job_number(node.get("cryosparc_job_uid", ""))) if pending else None
 
 
 def configured_box_size_trials() -> list[int]:

@@ -420,6 +420,27 @@ class ActionRegistryFixedTests(unittest.TestCase):
             )
         self.assertIn("extract_micrographs_multi", [item["job_type"] for item in candidates])
 
+    def test_stale_cursor_cannot_bypass_newer_pending_pick_inspection(self):
+        state = picking_workflow_state()
+        state["nodes"].insert(0, {
+            "workflow_node_id": "J9", "logical_node_id": "ctf", "cryosparc_job_uid": "J9",
+            "job_type": "patch_ctf_estimation_multi", "status": "completed",
+            "updated_at": "2026-01-01T00:00:00Z", "parent_job_uids": [],
+            "child_job_uids": [], "child_workflow_node_ids": [],
+            "child_logical_node_ids": [], "inputs": {}, "outputs": {},
+            "key_parameters": {}, "runtime": {}, "has_error": False, "has_warning": False,
+        })
+        with patch(
+            "action_registry.build_registry_next_actions",
+            return_value=([registry_candidate("template_picker_gpu")], []),
+        ):
+            candidates, blocked = generate_candidate_actions(
+                state, "J9", project_uid="P2", include_registry=True
+            )
+        self.assertEqual(candidates, [])
+        self.assertEqual([item["job_type"] for item in blocked], ["template_picker_gpu"])
+        self.assertIn("newer job J10", blocked[0]["blocked_by"][-1])
+
     def test_missing_cursor_resolves_latest_workspace_node(self):
         state = picking_workflow_state()
         with patch("action_registry.extract_workflow_state", return_value=state), patch(
