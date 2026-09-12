@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+import shutil
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+
+from train_lora_sft_fsdp import (
+    ChatSFTDataset,
+    SFTDataCollator,
+    infer_lora_target_modules,
+    load_jsonl,
+    parse_args,
+    split_records,
+)
+
+
+def distributed_barrier() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+def shutdown_process_group() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def copy_if_exists(src: Path, dst: Path) -> None:
+    if src.exists():
+        shutil.copy2(src, dst)
+
+
+def stage_final_artifacts(output_dir: Path, global_step: int) -> None:
+    checkpoint_dir = output_dir / f"checkpoint-{global_step}"
+    if not checkpoint_dir.exists():
+        print(f"Final checkpoint directory not found: {checkpoint_dir}")
+        return
+
+    for name in [
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "README.md",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "chat_template.jinja",
+    ]:
+        copy_if_exists(checkpoint_dir / name, output_dir / name)
+
+
+def load_tokenizer_source(model_path: Path, init_adapter_path: Path | None) -> Path:
+    if init_adapter_path and (init_adapter_path / "tokenizer_config.json").exists():
+        return init_adapter_path
+    return model_path
+
+
+def maybe_merge_init_adapter(model, init_adapter_path: Path | None):
+    if init_adapter_path is None:
+        return model
+    print(f"Merging initialization adapter from: {init_adapter_path}")
+    merged = PeftModel.from_pretrained(model, init_adapter_path, is_trainable=False)
+    merged = merged.merge_and_unload()
+    return merged
+
+
+def main() -> None:
+    args = parse_args()
+    torch.manual_seed(args.seed)
+
+    model_path = Path(args.model_path).resolve()
+    init_adapter_path = Path(args.init_adapter_path).resolve() if args.init_adapter_path else None
+    train_jsonl = Path(args.train_jsonl).resolve()
+    eval_jsonl = Path(args.eval_jsonl).resolve() if args.eval_jsonl else None
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tokenizer_source = load_tokenizer_source(model_path, init_adapter_path)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True, local_files_only=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    train_records = load_jsonl(train_jsonl)
+    if eval_jsonl:
+        eval_records = load_jsonl(eval_jsonl)
+    else:
+        train_records, eval_records = split_records(train_records, args.eval_ratio, args.seed)
+
+    train_dataset = ChatSFTDataset(train_records, tokenizer, args.max_length)
+    eval_dataset = ChatSFTDataset(eval_records, tokenizer, args.max_length) if eval_records else None
+
+    dtype = torch.bfloat16 if args.bf16 else torch.float16
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+        local_files_only=True,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True,
+    )
+    model.config.use_cache = False
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+
+    model = maybe_merge_init_adapter(model, init_adapter_path)
+
+    target_modules = infer_lora_target_modules(model, args.target_modules)
+    print(f"Using LoRA target modules: {target_modules}")
+    model = get_peft_model(
+        model,
+        LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            target_modules=target_modules,
+        ),
+    )
+    model.print_trainable_parameters()
+
+    fsdp = f"{args.fsdp_mode} auto_wrap"
+    fsdp_config = {
+        "transformer_layer_cls_to_wrap": [args.fsdp_transformer_layer_cls_to_wrap],
+        "backward_prefetch": "backward_pre",
+        "forward_prefetch": False,
+        "limit_all_gathers": True,
+        "cpu_ram_efficient_loading": True,
+        "sync_module_states": True,
+        "use_orig_params": False,
+        "offload_params": args.fsdp_offload_params,
+    }
+    print(f"Enabled FSDP: mode={args.fsdp_mode}, wrap={args.fsdp_transformer_layer_cls_to_wrap}")
+
+    training_args = TrainingArguments(
+        output_dir=str(output_dir),
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        num_train_epochs=args.num_train_epochs,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        warmup_ratio=args.warmup_ratio,
+        logging_steps=args.logging_steps,
+        save_steps=args.save_steps,
+        eval_steps=args.eval_steps,
+        save_total_limit=args.save_total_limit,
+        bf16=args.bf16,
+        fp16=not args.bf16,
+        eval_strategy="steps" if eval_dataset else "no",
+        save_strategy="steps",
+        logging_strategy="steps",
+        report_to=args.report_to if args.report_to != "none" else [],
+        gradient_checkpointing=args.gradient_checkpointing,
+        ddp_find_unused_parameters=False,
+        remove_unused_columns=False,
+        seed=args.seed,
+        fsdp=fsdp,
+        fsdp_config=fsdp_config,
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=SFTDataCollator(tokenizer),
+    )
+
+    try:
+        trainer.train()
+        distributed_barrier()
+
+        if trainer.is_world_process_zero():
+            stage_final_artifacts(output_dir, trainer.state.global_step)
+            tokenizer.save_pretrained(output_dir)
+
+        distributed_barrier()
+    finally:
+        shutdown_process_group()
+
+
+if __name__ == "__main__":
+    main()

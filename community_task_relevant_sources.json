@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "purpose": "Curated community and training sources for task-relevant CPT corpus expansion.",
+  "recommended_buckets": [
+    {
+      "bucket_id": "community_repo_docs",
+      "weight": 0.2,
+      "notes": "High-value GitHub official/community repositories with strong operational documentation."
+    },
+    {
+      "bucket_id": "public_training_materials",
+      "weight": 0.15,
+      "notes": "Public training pages, user guides, and workshop-style materials."
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "github_relion_repo",
+      "priority": "P1",
+      "bucket": "community_repo_docs",
+      "name": "RELION GitHub repository",
+      "homepage": "https://github.com/3dem/relion",
+      "type": "github_repo",
+      "why_useful": "Core software repo with versioned README, installation cues, and implementation-facing context."
+    },
+    {
+      "source_id": "github_relion_documents",
+      "priority": "P1",
+      "bucket": "community_repo_docs",
+      "name": "RELION documentation repository",
+      "homepage": "https://github.com/3dem/relion-documents",
+      "type": "github_repo",
+      "why_useful": "Repository that backs RELION documentation and contains reference/developer-oriented docs."
+    },
+    {
+      "source_id": "github_topaz",
+      "priority": "P1.5",
+      "bucket": "community_repo_docs",
+      "name": "Topaz GitHub repository",
+      "homepage": "https://github.com/tbepler/topaz",
+      "type": "github_repo",
+      "why_useful": "High-value particle-picking documentation and CLI examples relevant to cryo-EM preprocessing."
+    },
+    {
+      "source_id": "github_nextpyp",
+      "priority": "P1.5",
+      "bucket": "community_repo_docs",
+      "name": "nextPYP GitHub repository",
+      "homepage": "https://github.com/nextpyp/pyp",
+      "type": "github_repo",
+      "why_useful": "Pipeline-oriented cryo-EM processing repo with practical workflow and automation context."
+    },
+    {
+      "source_id": "scipion_tutorials",
+      "priority": "P1",
+      "bucket": "public_training_materials",
+      "name": "Scipion user documentation and facilities guides",
+      "homepage": "https://scipion-em.github.io/docs/release-3.0.0/index.html",
+      "type": "public_training",
+      "why_useful": "Structured public user guides and facilities/tutorial pages with practical EM workflow content."
+    },
+    {
+      "source_id": "teamtomo_site",
+      "priority": "P2",
+      "bucket": "public_training_materials",
+      "name": "TeamTomo site",
+      "homepage": "https://teamtomo.org/",
+      "type": "public_training",
+      "why_useful": "Community knowledge site with curated algorithmic and IO package content for tomography workflows."
+    }
+  ]
+}
