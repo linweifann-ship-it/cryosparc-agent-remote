@@ -19,6 +19,10 @@ from cryosparc_cli_tools import (
 from job_specs import list_supported_job_types
 from job_result import get_job_result_package as registry_get_job_result_package
 from job_result import wait_for_job_result_package as registry_wait_for_job_result_package
+from model_context_compaction import (
+    compact_candidate_context_payload,
+    compact_execution_response,
+)
 from model_input_builder import build_model_input_payload as registry_build_model_input_payload
 from v2_decision_adapter import (
     adapt_v2_decision_to_internal,
@@ -199,12 +203,12 @@ def get_candidate_actions(
     """
     Return the candidate actions currently recognized by the MCP adapter.
     """
-    return registry_get_candidate_actions(
+    return compact_candidate_context_payload(registry_get_candidate_actions(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
         dataset_info=dataset_info,
-    )
+    ))
 
 
 @mcp.tool()
@@ -369,12 +373,12 @@ def get_job_result_package(
     Queue/running states are returned as MCP-internal status packages with
     ready_for_model=false.
     """
-    return registry_get_job_result_package(
+    return compact_candidate_context_payload(registry_get_job_result_package(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         job_uid=job_uid,
         include_next_candidates=include_next_candidates,
-    )
+    ))
 
 
 @mcp.tool()
@@ -389,14 +393,14 @@ def wait_for_job_result_package(
     """
     Poll a CryoSPARC job and return a model-facing result package when finished.
     """
-    return registry_wait_for_job_result_package(
+    return compact_candidate_context_payload(registry_wait_for_job_result_package(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         job_uid=job_uid,
         timeout_seconds=timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
         include_next_candidates=include_next_candidates,
-    )
+    ))
 
 
 @mcp.tool()
@@ -443,7 +447,7 @@ def attach_candidate_context(
         "current_node_id": context["current_node_id"],
         "decision_hint": context["decision_hint"],
     }
-    return payload
+    return compact_candidate_context_payload(payload)
 
 
 @mcp.tool()
@@ -515,7 +519,7 @@ def execute_v2_model_decision(
     """
     Adapt and execute a V2 model decision through the existing internal executor.
     """
-    return execute_v2_model_decision_payload(
+    response = execute_v2_model_decision_payload(
         normalize_decision_argument(decision),
         project_uid=project_uid,
         workspace_uid=workspace_uid,
@@ -524,6 +528,7 @@ def execute_v2_model_decision(
         dry_run=dry_run,
         allow_approval_required_create=allow_approval_required_create,
     )
+    return compact_execution_response(response)
 
 
 def normalize_decision_argument(decision: Any) -> dict[str, Any]:
