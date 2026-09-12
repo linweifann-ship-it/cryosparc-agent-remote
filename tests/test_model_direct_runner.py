@@ -54,6 +54,22 @@ class ModelDirectRunnerTests(unittest.TestCase):
         self.assertIsNone(normalize_optional_path("none"))
         self.assertEqual(normalize_optional_path("/tmp/adapter"), "/tmp/adapter")
 
+    def test_visual_context_adds_openai_multimodal_image_url(self):
+        messages = build_workflow_decision_prompt(
+            {"schema_version": "2.0", "candidate_actions": []},
+            {
+                "kind": "pick_inspection",
+                "contact_sheet": {"data_url": "data:image/png;base64,TEST"},
+            },
+        )
+        visual_message = messages[-1]
+        self.assertIsInstance(visual_message["content"], list)
+        self.assertEqual(visual_message["content"][1]["type"], "image_url")
+        self.assertEqual(
+            visual_message["content"][1]["image_url"]["url"],
+            "data:image/png;base64,TEST",
+        )
+
     def test_api_retries_transient_errors(self):
         response = mock.Mock()
         response.__enter__ = mock.Mock(return_value=response)

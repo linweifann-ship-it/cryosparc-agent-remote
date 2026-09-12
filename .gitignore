@@ -6,3 +6,6 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+logs/
+reports/
+runs/
