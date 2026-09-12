@@ -6,7 +6,7 @@ from v2_decision_adapter import (
     adapt_v2_decision_to_internal,
     execute_v2_model_decision_payload,
 )
-from action_registry import validate_parameters
+from action_registry import validate_model_decision_payload, validate_parameters
 
 
 def candidate_actions():
@@ -193,6 +193,53 @@ class V2DecisionAdapterTests(unittest.TestCase):
         self.assertEqual(
             result["internal_decision"]["selected_actions"][0]["parameters"]["psize_A"],
             0.6575,
+        )
+
+    def test_empty_workspace_initial_import_binds_candidate_and_keeps_defaults(self):
+        defaults = {
+            "blob_paths": "/data/initial/*.mrc",
+            "psize_A": 0.6575,
+            "accel_kv": 300,
+            "cs_mm": 2.7,
+            "total_dose_e_per_A2": 53,
+        }
+        candidates = [{
+            "action_id": "initial_import_micrographs",
+            "action_type": "forward",
+            "workflow_node_id": "initial:import_micrographs",
+            "job_type": "import_micrographs",
+            "execution_mode": "create_job",
+            "available": True,
+            "parameter_template": {
+                "blob_paths": {"type": "string", "required": True},
+                "psize_A": {"type": "number", "minimum": 0},
+                "accel_kv": {"type": "number", "minimum": 0},
+                "cs_mm": {"type": "number", "minimum": 0},
+                "total_dose_e_per_A2": {"type": "number", "minimum": 0},
+            },
+            "default_parameters": defaults,
+        }]
+        decision = {
+            "decision_type": "forward",
+            "action": "import_micrographs",
+            "workflow_node_id": "generic:import_micrographs",
+            "parameters": {},
+        }
+
+        adapter_result = adapt_v2_decision_to_internal(decision, candidates)
+        self.assertTrue(adapter_result["success"])
+        action = adapter_result["internal_decision"]["selected_actions"][0]
+        self.assertEqual(action["action_id"], "initial_import_micrographs")
+        self.assertEqual(action["workflow_node_id"], "initial:import_micrographs")
+
+        validation = validate_model_decision_payload(
+            adapter_result["internal_decision"],
+            candidate_actions=candidates,
+        )
+        self.assertTrue(validation["success"])
+        self.assertEqual(
+            validation["resolved_actions"][0]["resolved_parameters"],
+            defaults,
         )
 
     def test_registry_boolean_defaults_are_normalized(self):

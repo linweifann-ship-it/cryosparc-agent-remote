@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -16,7 +17,7 @@ from mcp.client.stdio import stdio_client
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model_direct_runner import parse_model_decision_text
+from model_direct_runner import parse_model_decision_text, run_openai_compatible_model
 
 
 DEFAULT_BASE_MODEL = "/ssd1/lisongyang/models/Qwen3.6-27B-ms-test"
@@ -147,8 +148,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-json", default="{}")
     parser.add_argument("--dataset-json-file")
     parser.add_argument("--known-workflow-dir", action="append", default=[])
+    parser.add_argument("--backend", choices=["local", "api"], default="local")
     parser.add_argument("--base-model", default=DEFAULT_BASE_MODEL)
     parser.add_argument("--adapter", default=DEFAULT_ADAPTER)
+    parser.add_argument("--api-base")
+    parser.add_argument("--api-model")
+    parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--model-python", default=DEFAULT_MODEL_PYTHON)
     parser.add_argument("--model-srun-prefix")
     parser.add_argument("--server-python", default=DEFAULT_SERVER_PYTHON)
@@ -175,7 +180,11 @@ async def main_async() -> None:
         "project_uid": args.project,
         "workspace_uid": args.workspace,
         "start_current_node": args.current_node,
-        "model_paths": {"base_model": args.base_model, "adapter": args.adapter},
+        "backend": args.backend,
+        "model_paths": {
+            "base_model": args.base_model if args.backend == "local" else None,
+            "adapter": args.adapter if args.backend == "local" else None,
+        },
         "command": " ".join(sys.argv),
         "rounds": [],
         "stop_reason": None,
@@ -192,14 +201,41 @@ async def main_async() -> None:
     feedback_to_model: dict[str, Any] | None = None
     validation_failures = 0
 
-    model_worker = ModelWorker(args, run_dir / "model_worker.stderr.log")
-    model_worker.start()
-    summary["model_worker"] = {
-        "command": model_worker.command,
-        "load_event": model_worker.load_event,
-    }
+    model_worker = None
+    api_config = None
+    if args.backend == "local":
+        model_worker = ModelWorker(args, run_dir / "model_worker.stderr.log")
+        model_worker.start()
+        summary["model_worker"] = {
+            "command": model_worker.command,
+            "load_event": model_worker.load_event,
+        }
+    else:
+        try:
+            api_config = resolve_api_backend_config(args)
+        except Exception as exc:
+            error_payload = {
+                "backend": "api",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+            summary["stop_reason"] = "infrastructure_failure"
+            summary["error"] = error_payload
+            summary["finished_at"] = utc_now()
+            write_json(run_dir / "summary.json", summary, None)
+            print_run_summary(summary, run_dir)
+            return
+        summary["api_backend"] = {
+            "api_base": api_config["api_base"],
+            "api_model": api_config["api_model"],
+            "api_key_env": args.api_key_env,
+        }
+        summary["model_paths"].update(
+            {"api_base": api_config["api_base"], "api_model": api_config["api_model"]}
+        )
     async with AsyncExitStack() as stack:
-        stack.callback(model_worker.close)
+        if model_worker is not None:
+            stack.callback(model_worker.close)
         read, write = await stack.enter_async_context(stdio_client(server_params))
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
@@ -256,12 +292,38 @@ async def main_async() -> None:
             write_json(messages_file, messages, round_log)
 
             generation_file = round_dir / "model_generation.json"
-            model_call = model_worker.generate(
-                request_id=f"round_{round_index:02d}",
-                messages=messages,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-            )
+            try:
+                if args.backend == "api":
+                    assert api_config is not None
+                    model_call = await asyncio.to_thread(
+                        generate_api_model,
+                        messages,
+                        api_config,
+                        args.max_new_tokens,
+                        args.temperature,
+                    )
+                    model_call["request_id"] = f"round_{round_index:02d}"
+                else:
+                    assert model_worker is not None
+                    model_call = model_worker.generate(
+                        request_id=f"round_{round_index:02d}",
+                        messages=messages,
+                        max_new_tokens=args.max_new_tokens,
+                        temperature=args.temperature,
+                    )
+            except Exception as exc:
+                error_payload = {
+                    "backend": args.backend,
+                    "error_type": type(exc).__name__,
+                    "error": redact_api_key(str(exc), api_config),
+                    "api_base": api_config["api_base"] if api_config else None,
+                    "api_model": api_config["api_model"] if api_config else None,
+                }
+                round_log["model_error"] = error_payload
+                write_json(round_dir / "model_error.json", error_payload, round_log)
+                summary["stop_reason"] = "infrastructure_failure"
+                summary["error"] = error_payload
+                break
             round_log["model_call"] = model_call
             round_log["raw_model_output_file"] = str(generation_file)
             write_json(generation_file, model_call, round_log)
@@ -514,6 +576,47 @@ def build_autonomous_prompt(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
+
+
+def resolve_api_backend_config(args: argparse.Namespace) -> dict[str, str]:
+    api_base = (args.api_base or os.environ.get("OPENAI_BASE_URL", "")).strip()
+    api_model = (args.api_model or os.environ.get("OPENAI_MODEL", "")).strip()
+    api_key = os.environ.get(args.api_key_env, "").strip()
+    missing = []
+    if not api_base:
+        missing.append("--api-base or OPENAI_BASE_URL")
+    if not api_model:
+        missing.append("--api-model or OPENAI_MODEL")
+    if not api_key:
+        missing.append(args.api_key_env)
+    if missing:
+        raise ValueError("API backend configuration missing: " + ", ".join(missing))
+    return {
+        "api_base": api_base,
+        "api_model": api_model,
+        "api_key": api_key,
+    }
+
+
+def generate_api_model(
+    messages: list[dict[str, str]],
+    api_config: dict[str, str],
+    max_new_tokens: int,
+    temperature: float,
+) -> dict[str, Any]:
+    return run_openai_compatible_model(
+        messages=messages,
+        api_base=api_config["api_base"],
+        api_key=api_config["api_key"],
+        model_name=api_config["api_model"],
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+    )
+
+
+def redact_api_key(message: str, api_config: dict[str, str] | None) -> str:
+    api_key = (api_config or {}).get("api_key")
+    return message.replace(api_key, "[REDACTED]") if api_key else message
 
 
 class ModelWorker:

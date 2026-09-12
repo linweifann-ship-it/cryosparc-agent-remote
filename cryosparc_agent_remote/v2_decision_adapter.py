@@ -329,6 +329,23 @@ def match_candidate(
     candidate_actions: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Find the internal candidate that best matches the V2 model request."""
+    job_type = requested.get("job_type") or requested.get("action")
+    available_candidates = [
+        candidate
+        for candidate in candidate_actions
+        if candidate.get("available", True)
+    ]
+    matching_available_candidates = [
+        candidate
+        for candidate in available_candidates
+        if candidate.get("job_type") == job_type
+    ]
+    if (
+        len(available_candidates) == 1
+        and len(matching_available_candidates) == 1
+    ):
+        return matching_available_candidates[0]
+
     action_id = requested.get("action_id")
     if action_id:
         return next(
@@ -341,7 +358,6 @@ def match_candidate(
         )
 
     workflow_node_id = requested.get("workflow_node_id")
-    job_type = requested.get("job_type") or requested.get("action")
     matches = [
         candidate
         for candidate in candidate_actions

@@ -1471,9 +1471,14 @@ def validate_action_against_candidates(
                 )
         parameter_template = candidate["parameter_template"]
         execution_mode = candidate["execution_mode"]
+        parameters = {
+            **(candidate.get("default_parameters") or {}),
+            **action.parameters,
+        }
     else:
         parameter_template = get_parameter_template(action.job_type)
         execution_mode = "create_job"
+        parameters = action.parameters
         warnings.append(
             ValidationIssue(
                 severity="warning",
@@ -1487,7 +1492,7 @@ def validate_action_against_candidates(
         )
 
     parameter_issues, resolved_parameters = validate_parameters(
-        action.parameters,
+        parameters,
         parameter_template,
         path=f"{path}.parameters",
     )
