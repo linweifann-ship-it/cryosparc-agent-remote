@@ -312,18 +312,22 @@ async def run_agents_closed_loop(config: AgentsRunConfig) -> dict[str, Any]:
 
 
 def build_mcp_stdio_params(config: AgentsRunConfig) -> dict[str, Any]:
+    # Run-scoped facts travel directly to the MCP subprocess; execution must
+    # not depend on the model repeating acquisition parameters in tool calls.
+    mcp_env = os.environ.copy()
+    mcp_env["CRYOAGENT_DATASET_INFO_JSON"] = json.dumps(config.dataset_info)
     if config.mcp_stdio_command:
         return {
             "command": config.mcp_stdio_command[0],
             "args": config.mcp_stdio_command[1:],
             "cwd": str(Path.cwd()),
-            "env": os.environ.copy(),
+            "env": mcp_env,
         }
     return {
         "command": config.server_python,
         "args": [str(config.project_dir / config.mcp_server)],
         "cwd": str(config.project_dir),
-        "env": os.environ.copy(),
+        "env": mcp_env,
     }
 
 

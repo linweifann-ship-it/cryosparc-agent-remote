@@ -2,6 +2,7 @@
 from mcp.server.fastmcp import FastMCP
 from typing import Any
 import json
+import os
 
 from action_registry import (
     execute_model_decision_payload,
@@ -34,6 +35,20 @@ from cryosift_adapter import evaluate_2d_classes_with_cryosift as evaluate_2d_cl
 
 
 mcp = FastMCP("cryoSPARC Tools")
+
+
+def runtime_dataset_info(dataset_info: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Use runner-owned facts unless an explicit MCP caller supplies them."""
+    if dataset_info is not None:
+        return dataset_info
+    raw = os.getenv("CRYOAGENT_DATASET_INFO_JSON", "{}")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("CRYOAGENT_DATASET_INFO_JSON must contain an object.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("CRYOAGENT_DATASET_INFO_JSON must contain an object.")
+    return parsed
 
 
 # Read-only knowledge-base tools. They are prefixed to keep historical evidence
@@ -466,6 +481,7 @@ def validate_v2_model_decision(
         project_uid=project_uid,
         workspace_uid=workspace_uid,
         current_node_id=current_node_id,
+        dataset_info=runtime_dataset_info(),
     )
     normalized_decision = normalize_decision_argument(decision)
     adapter_result = adapt_v2_decision_to_internal(
@@ -491,7 +507,7 @@ def execute_v2_model_decision(
     decision: dict[str, Any],
     project_uid: str,
     workspace_uid: str,
-    dataset_info: dict,
+    dataset_info: dict[str, Any] | None = None,
     current_node_id: str | None = None,
     dry_run: bool = True,
     allow_approval_required_create: bool = False,
@@ -503,7 +519,7 @@ def execute_v2_model_decision(
         normalize_decision_argument(decision),
         project_uid=project_uid,
         workspace_uid=workspace_uid,
-        dataset_info=dataset_info,
+        dataset_info=runtime_dataset_info(dataset_info),
         current_node_id=current_node_id,
         dry_run=dry_run,
         allow_approval_required_create=allow_approval_required_create,

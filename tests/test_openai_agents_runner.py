@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from cryosparc_agent_remote.openai_agents_runner import (
     AgentsRunConfig,
+    build_mcp_stdio_params,
     build_step_input,
     cancel_physical_race_job,
     config_from_args,
@@ -66,6 +67,21 @@ class OpenAIAgentsRunnerTests(unittest.TestCase):
         self.assertNotIn("first step", prompt_text.lower())
         self.assertNotIn("should import", prompt_text.lower())
         self.assertNotIn("应该", prompt_text)
+
+    def test_mcp_subprocess_receives_runner_owned_dataset_facts(self):
+        config = AgentsRunConfig(
+            project_uid="P2", workspace_uid="W22", start_node=None, model="m",
+            base_url="u", api_key="k", run_id="r", output_dir=Path("runs/r"),
+            dataset_info={"spherical_aberration_mm": 2.7}, known_workflow_dirs=[],
+            max_steps=1, max_turns_per_step=1, wait_timeout_seconds=1,
+            poll_interval_seconds=1, server_python="python", project_dir=Path("/repo"),
+            mcp_server="server.py", mcp_stdio_command=None, use_responses_api=True,
+            prompt_cache_options_enabled=True,
+        )
+        self.assertEqual(
+            json.loads(build_mcp_stdio_params(config)["env"]["CRYOAGENT_DATASET_INFO_JSON"]),
+            {"spherical_aberration_mm": 2.7},
+        )
 
     def test_extract_created_jobs_deduplicates_nested_job_packages(self):
         event = {
