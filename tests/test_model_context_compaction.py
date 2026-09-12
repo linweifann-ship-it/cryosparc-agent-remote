@@ -19,14 +19,19 @@ class ModelContextCompactionTests(unittest.TestCase):
         }
         compact = compact_candidate_action(candidate)
         self.assertEqual(compact["job_type"], "large_job")
-        self.assertEqual(compact["required_inputs"]["micrographs"][0]["source_job_uid"], "J1")
-        self.assertEqual(compact["parameter_interface"]["parameter_names"], ["diameter", "mode"])
+        self.assertEqual(compact["available_input_slots"], ["micrographs"])
         self.assertEqual(compact["parameter_interface"]["required_parameters"], ["diameter"])
-        self.assertEqual(compact["parameter_interface"]["default_parameters_omitted"], 20)
+        self.assertEqual(
+            compact["parameter_interface"]["details_available_via"],
+            "get_candidate_action_details",
+        )
+        self.assertNotIn("parameter_names", compact["parameter_interface"])
+        self.assertNotIn("default_parameters", compact["parameter_interface"])
 
     def test_small_import_defaults_are_preserved(self):
         payload = {"candidate_actions": [{
             "action_id": "initial_import_micrographs", "job_type": "import_micrographs",
+            "workflow_stage": "import",
             "parameter_template": {"cs_mm": {}, "psize_A": {}},
             "default_parameters": {"cs_mm": 2.7, "psize_A": 0.6575},
         }]}

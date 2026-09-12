@@ -212,6 +212,54 @@ def get_candidate_actions(
 
 
 @mcp.tool()
+def get_candidate_action_details(
+    project_uid: str,
+    workspace_uid: str,
+    job_type: str,
+    current_node_id: str | None = None,
+    action_id: str | None = None,
+) -> dict[str, Any]:
+    """Return one candidate's full parameter and connection contract on demand.
+
+    The normal candidate list is an index so repeated model turns fit within
+    the provider context window. This lossless one-action lookup is available
+    when the model needs an exact non-default parameter or connection contract.
+    """
+    context = registry_get_candidate_actions(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
+        dataset_info=runtime_dataset_info(),
+    )
+    matches = [
+        candidate
+        for candidate in context["candidate_actions"]
+        if candidate.get("job_type") == job_type
+        and (action_id is None or candidate.get("action_id") == action_id)
+    ]
+    if len(matches) != 1:
+        return {
+            "success": False,
+            "job_type": job_type,
+            "action_id": action_id,
+            "match_count": len(matches),
+            "issues": [{
+                "severity": "error",
+                "code": "candidate_detail_not_unique",
+                "message": "Specify an MCP-visible action_id when job_type is ambiguous.",
+                "path": "action_id",
+            }],
+        }
+    return {
+        "success": True,
+        "project_uid": project_uid,
+        "workspace_uid": workspace_uid,
+        "current_node_id": context["current_node_id"],
+        "candidate": matches[0],
+    }
+
+
+@mcp.tool()
 def get_workflow_state(
     project_uid: str,
     workspace_uid: str,

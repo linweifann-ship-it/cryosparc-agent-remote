@@ -12,6 +12,7 @@ class EvidenceToolIntegrationTests(unittest.TestCase):
     def test_agents_runner_exposes_evidence_tools_without_removing_execution_tools(self):
         expected_tools = {
             "get_workflow_decision_context",
+            "get_candidate_action_details",
             "kb_get_decision_context",
             "kb_search_cryoem_kb",
             "get_class_average_visual_context",

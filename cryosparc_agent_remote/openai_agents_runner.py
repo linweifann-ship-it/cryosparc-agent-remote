@@ -56,6 +56,7 @@ STATIC_MCP_PROTOCOL = {
     "required_mcp_sequence": [
         "get_workflow_decision_context",
         "Optionally use kb_* tools, get_micrograph_visual_context, get_class_average_visual_context, get_pick_inspection_visual_context, or evaluate_2d_classes_with_cryosift when extra evidence is needed.",
+        "Use get_candidate_action_details only when an MCP-visible candidate needs an exact parameter or connection contract.",
         "validate_v2_model_decision when you have a candidate decision",
         "execute_v2_model_decision with dry_run=false for executable decisions",
         "wait_for_job_result_package for created jobs",
@@ -77,6 +78,7 @@ STATIC_MCP_PROTOCOL = {
 
 CLOSED_LOOP_MCP_TOOLS = [
     "get_workflow_decision_context",
+    "get_candidate_action_details",
     "kb_search_cryoem_kb",
     "kb_get_dataset_summary",
     "kb_get_workflow",
