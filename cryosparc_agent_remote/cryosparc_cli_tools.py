@@ -1,17 +1,18 @@
 # Wraps CryoSPARC CLI and cryosparc-tools calls behind structured Python helpers.
 import json
-import os
-import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from cryosparc_client import (
+    DEFAULT_CRYOSPARC_BASE_PORT,
+    DEFAULT_CRYOSPARC_HOST,
+    cryosparc_client,
+)
+
 
 CRYOSPARCM = Path("/ssd1/linweifan/cryosparc/cryosparc_master/bin/cryosparcm")
 CRYOSPARCW = Path("/ssd1/linweifan/cryosparc/cryosparc_worker/bin/cryosparcw")
-CRYOSPARC_CONFIG = Path("/ssd1/linweifan/cryosparc/cryosparc_master/config.sh")
-DEFAULT_CRYOSPARC_HOST = "localhost"
-DEFAULT_CRYOSPARC_BASE_PORT = 61000
 
 
 # Command helpers keep shell output predictable for MCP callers.
@@ -56,23 +57,6 @@ def parse_json_output(command_result: dict) -> dict:
     except json.JSONDecodeError:
         parsed["parsed_stdout"] = None
     return parsed
-
-
-# CryoSPARC client setup reads credentials from environment or config.sh.
-def read_cryosparc_config() -> dict[str, str]:
-    """
-    读取 CryoSPARC config.sh 中的简单 export 变量。
-    """
-    values: dict[str, str] = {}
-    if not CRYOSPARC_CONFIG.exists():
-        return values
-
-    export_re = re.compile(r'^export\s+([A-Za-z_][A-Za-z0-9_]*)=(["\']?)(.*?)\2$')
-    for line in CRYOSPARC_CONFIG.read_text().splitlines():
-        match = export_re.match(line.strip())
-        if match:
-            values[match.group(1)] = match.group(3)
-    return values
 
 
 def cryosparc_status() -> dict:
@@ -123,27 +107,6 @@ def cryosparc_test_workers(
     if test_pytorch:
         cmd.append("--test-pytorch")
     return run_command(cmd, timeout=timeout)
-
-
-def cryosparc_client(
-    host: str = DEFAULT_CRYOSPARC_HOST,
-    base_port: int = DEFAULT_CRYOSPARC_BASE_PORT,
-):
-    """
-    创建 cryosparc-tools client。
-    """
-    from cryosparc.tools import CryoSPARC
-
-    config = read_cryosparc_config()
-    license_id = os.getenv("CRYOSPARC_LICENSE_ID") or config.get("CRYOSPARC_LICENSE_ID")
-    email = os.getenv("CRYOSPARC_EMAIL")
-    password = os.getenv("CRYOSPARC_PASSWORD")
-
-    if email and password:
-        return CryoSPARC(host=host, base_port=base_port, email=email, password=password)
-    if license_id:
-        return CryoSPARC(host=host, base_port=base_port, license=license_id)
-    return CryoSPARC(host=host, base_port=base_port)
 
 
 # Direct CryoSPARC operations used by the MCP tools.
