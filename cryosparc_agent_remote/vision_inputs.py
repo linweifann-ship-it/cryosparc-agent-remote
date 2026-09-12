@@ -12,6 +12,37 @@ from PIL import Image, ImageDraw, ImageFont
 from cryosparc_client import cryosparc_client
 
 
+# The model receives every contact sheet as one native image input.  Keep that
+# image bounded regardless of a caller's requested panel count or tile size so
+# a legitimate evidence request cannot exhaust the model context window.
+MAX_VISUAL_CONTACT_SHEET_PIXELS = 360_000
+
+
+def bounded_visual_layout(
+    requested_count: int,
+    requested_tile_size: int,
+    columns: int,
+    label_height: int,
+    maximum_count: int,
+) -> tuple[int, int, int, int]:
+    """Return a deterministic, context-safe contact-sheet layout.
+
+    Sampling policy remains the caller's/tool's existing policy.  This helper
+    only bounds rendering resolution and the pre-existing maximum item count.
+    """
+    count = max(1, min(int(requested_count), maximum_count))
+    columns = max(1, min(int(columns), count))
+    rows = math.ceil(count / columns)
+    requested_tile_size = max(1, int(requested_tile_size))
+
+    # columns * tile * rows * (tile + label_height) <= pixel budget
+    linear = columns * rows * label_height
+    discriminant = linear * linear + 4 * columns * rows * MAX_VISUAL_CONTACT_SHEET_PIXELS
+    largest_tile = max(1, int((-linear + math.sqrt(discriminant)) / (2 * columns * rows)))
+    tile_size = min(requested_tile_size, largest_tile)
+    return count, tile_size, columns, rows
+
+
 def vision_cache_dir() -> Path:
     """Return an operator-overridable cache directory that is writable by default."""
     return Path(os.getenv("CRYOAGENT_VISION_CACHE_DIR", "/tmp/cryoagent/vision_inputs"))
@@ -41,10 +72,16 @@ def build_class_average_visual_context(
     stack = np.asarray(stack)
     if stack.ndim == 2:
         stack = stack[None, ...]
-    count = min(len(paths), len(stack), max_classes)
-    selected_ids = list(range(count))
-    rows = math.ceil(count / columns)
+    requested_count = min(len(paths), len(stack), max_classes)
     label_height = 26
+    count, tile_size, columns, rows = bounded_visual_layout(
+        requested_count=requested_count,
+        requested_tile_size=tile_size,
+        columns=columns,
+        label_height=label_height,
+        maximum_count=50,
+    )
+    selected_ids = list(range(count))
     sheet = Image.new(
         "RGB", (columns * tile_size, rows * (tile_size + label_height)), "white"
     )
@@ -85,6 +122,7 @@ def build_class_average_visual_context(
             "data_url": f"data:image/png;base64,{encoded}",
             "columns": columns,
             "tile_size": tile_size,
+            "pixel_budget": MAX_VISUAL_CONTACT_SHEET_PIXELS,
             "label_format": "class_id=<integer>",
         },
     }
@@ -124,9 +162,16 @@ def build_micrograph_visual_context(
     pixel_sizes = list(micrographs.get("micrograph_blob/psize_A", []))
     if not pixel_sizes:
         pixel_sizes = list(micrographs.get("mscope_params/psize_A", []))
-    selected = np.linspace(0, len(mic_paths) - 1, min(max_micrographs, len(mic_paths))).round().astype(int)
+    requested_count, tile_size, columns, _ = bounded_visual_layout(
+        requested_count=min(max_micrographs, len(mic_paths)),
+        requested_tile_size=tile_size,
+        columns=3,
+        label_height=42,
+        maximum_count=6,
+    )
+    selected = np.linspace(0, len(mic_paths) - 1, requested_count).round().astype(int)
     chosen = sorted(set(int(index) for index in selected))
-    columns = min(3, len(chosen))
+    columns = min(columns, len(chosen))
     label_height = 42
     rows = math.ceil(len(chosen) / columns)
     sheet = Image.new("RGB", (columns * tile_size, rows * (tile_size + label_height)), "white")
@@ -178,6 +223,7 @@ def build_micrograph_visual_context(
             "data_url": f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}",
             "columns": columns,
             "tile_size": tile_size,
+            "pixel_budget": MAX_VISUAL_CONTACT_SHEET_PIXELS,
             "label_format": "micrograph_id=<integer> pixel_size_A=<number>",
         },
     }
@@ -214,13 +260,19 @@ def build_pick_inspection_visual_context(
             by_uid[uid].append(index)
     # Cover the whole pick-count range instead of selecting only the densest images.
     ranked_mics = sorted(by_uid, key=lambda uid: len(by_uid[uid]))
-    sample_count = max(1, min(max_micrographs, len(ranked_mics)))
+    label_height = 30
+    sample_count, tile_size, columns, _ = bounded_visual_layout(
+        requested_count=min(max_micrographs, len(ranked_mics)),
+        requested_tile_size=tile_size,
+        columns=3,
+        label_height=label_height,
+        maximum_count=8,
+    )
     sample_indices = np.linspace(0, len(ranked_mics) - 1, sample_count).round().astype(int)
     chosen_uids = [ranked_mics[index] for index in sorted(set(sample_indices))]
     mic_index = {uid: index for index, uid in enumerate(mic_uids)}
-    columns = min(3, len(chosen_uids))
+    columns = min(columns, len(chosen_uids))
     rows = math.ceil(len(chosen_uids) / columns)
-    label_height = 30
     sheet = Image.new("RGB", (columns * tile_size, rows * (tile_size + label_height)), "white")
     draw = ImageDraw.Draw(sheet)
     font = ImageFont.load_default()
@@ -320,6 +372,7 @@ def build_pick_inspection_visual_context(
             "data_url": f"data:image/png;base64,{encoded}",
             "columns": columns,
             "tile_size": tile_size,
+            "pixel_budget": MAX_VISUAL_CONTACT_SHEET_PIXELS,
             "label_format": "micrograph_id=<integer> uid=<integer> picks=<integer>",
         },
     }

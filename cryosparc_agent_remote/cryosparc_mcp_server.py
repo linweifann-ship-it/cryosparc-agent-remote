@@ -1,5 +1,6 @@
 # Exposes CryoSPARC helper functions as MCP tools for model-driven workflows.
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
+from mcp.types import CallToolResult, TextContent
 from typing import Any
 import json
 import os
@@ -39,6 +40,35 @@ from cryosift_adapter import evaluate_2d_classes_with_cryosift as evaluate_2d_cl
 
 
 mcp = FastMCP("cryoSPARC Tools")
+
+
+def visual_tool_result(visual: dict[str, Any]) -> CallToolResult:
+    """Return visual metadata as text and the sheet as a native MCP image block.
+
+    A base64 data URL embedded in a JSON tool response is treated as ordinary
+    text by model providers, which can consume an entire context window before
+    the model sees the image.  Native MCP ImageContent preserves the same
+    evidence while the Agents SDK forwards it as an image input.
+    """
+    contact_sheet = dict(visual.get("contact_sheet") or {})
+    local_path = contact_sheet.pop("local_path", None)
+    contact_sheet.pop("data_url", None)
+    if not local_path:
+        raise ValueError("Visual context did not provide a cached contact-sheet path.")
+    metadata = dict(visual)
+    metadata["contact_sheet"] = {
+        **contact_sheet,
+        "image_delivered_as": "native_mcp_image",
+    }
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+            ),
+            Image(path=local_path).to_image_content(),
+        ]
+    )
 
 
 def runtime_dataset_info(dataset_info: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -278,12 +308,14 @@ def get_class_average_visual_context(
     project_uid: str,
     job_uid: str,
     max_classes: int = 50,
-) -> dict:
+) -> CallToolResult:
     """Return a class-id-labelled contact sheet for a completed 2D job."""
-    return build_class_average_visual_context(
-        project_uid=project_uid,
-        job_uid=job_uid,
-        max_classes=max_classes,
+    return visual_tool_result(
+        build_class_average_visual_context(
+            project_uid=project_uid,
+            job_uid=job_uid,
+            max_classes=max_classes,
+        )
     )
 
 
@@ -294,14 +326,16 @@ def get_pick_inspection_visual_context(
     max_micrographs: int = 6,
     max_picks_per_micrograph: int = 400,
     micrograph_root: str | None = None,
-) -> dict:
+) -> CallToolResult:
     """Return micrograph thumbnails with Blob Picker locations overlaid."""
-    return build_pick_inspection_visual_context(
-        project_uid=project_uid,
-        job_uid=job_uid,
-        max_micrographs=max_micrographs,
-        max_picks_per_micrograph=max_picks_per_micrograph,
-        micrograph_root=micrograph_root,
+    return visual_tool_result(
+        build_pick_inspection_visual_context(
+            project_uid=project_uid,
+            job_uid=job_uid,
+            max_micrographs=max_micrographs,
+            max_picks_per_micrograph=max_picks_per_micrograph,
+            micrograph_root=micrograph_root,
+        )
     )
 
 
@@ -312,14 +346,16 @@ def get_micrograph_visual_context(
     output_name: str = "exposures",
     max_micrographs: int = 6,
     micrograph_root: str | None = None,
-) -> dict:
+) -> CallToolResult:
     """Return raw micrograph thumbnails and pixel scale from a completed job output."""
-    return build_micrograph_visual_context(
-        project_uid=project_uid,
-        job_uid=job_uid,
-        output_name=output_name,
-        max_micrographs=max_micrographs,
-        micrograph_root=micrograph_root,
+    return visual_tool_result(
+        build_micrograph_visual_context(
+            project_uid=project_uid,
+            job_uid=job_uid,
+            output_name=output_name,
+            max_micrographs=max_micrographs,
+            micrograph_root=micrograph_root,
+        )
     )
 
 
