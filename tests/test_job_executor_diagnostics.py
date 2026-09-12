@@ -190,6 +190,25 @@ class JobExecutorDiagnosticsTests(unittest.TestCase):
             "success": True,
         }])
 
+    def test_race_loser_is_killed_when_both_physical_jobs_are_running(self):
+        class FakeJob:
+            def __init__(self, uid):
+                self.uid = uid
+                self.status = "running"
+                self.killed = False
+
+            def kill(self):
+                self.killed = True
+
+        loser, winner = FakeJob("J225"), FakeJob("J226")
+        result = kill_non_running_race_losers(
+            {"J225": loser, "J226": winner}, "J226",
+            {"J225": "running", "J226": "running"},
+        )
+        self.assertTrue(loser.killed)
+        self.assertFalse(winner.killed)
+        self.assertTrue(result[0]["success"])
+
     def test_race_loser_cancel_fallback_when_kill_fails(self):
         class FakeJob:
             def __init__(self):

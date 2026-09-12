@@ -564,7 +564,10 @@ def kill_non_running_race_losers(
     winner_job_uid: str,
     statuses: dict[str, str],
 ) -> list[dict[str, Any]]:
-    keep_statuses = {"completed", "running", "started", "failed", "killed"}
+    # A running/started peer is still only a resource duplicate.  Once a
+    # winner is selected, retain terminal jobs for audit but cancel every
+    # other non-terminal physical job immediately.
+    keep_statuses = {"completed", "failed", "killed"}
     results = []
     for job_uid, raw_status in statuses.items():
         status = str(raw_status or "").lower()
