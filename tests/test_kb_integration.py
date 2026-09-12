@@ -145,6 +145,18 @@ class KBIntegrationTests(unittest.TestCase):
         self.assertEqual(len(model_inputs), 2)
         self.assertEqual(model_inputs[-1][1], [])
 
+    def test_required_policy_rejects_final_decision_without_retrieval(self):
+        async def model_call(messages, tools):
+            return {"tool_calls": [], "raw_text": '{"decision_type":"stop"}'}
+
+        async def executor(name, arguments):
+            raise AssertionError("Must not be called")
+
+        with self.assertRaisesRegex(RuntimeError, "required"):
+            asyncio.run(run_kb_tool_call_loop(
+                [{"role": "user", "content": "state"}], model_call, executor, required=True,
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()

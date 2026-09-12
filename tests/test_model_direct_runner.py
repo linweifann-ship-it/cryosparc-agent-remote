@@ -1,4 +1,5 @@
 # Tests direct-model JSON parsing helpers without loading the model.
+import json
 import io
 import unittest
 from unittest import mock
@@ -94,6 +95,22 @@ class ModelDirectRunnerTests(unittest.TestCase):
         self.assertEqual(result["attempts"], 3)
         self.assertEqual(urlopen.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+
+    def test_cache_parameter_rejection_retries_without_cache(self):
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = b'{"choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":3}}'
+        rejected = HTTPError("https://example.test", 400, "bad request", {}, io.BytesIO(b'{"error":"unknown prompt_cache_options"}'))
+        with mock.patch("model_direct_runner.request.urlopen", side_effect=[rejected, response]) as urlopen:
+            result = run_openai_compatible_model(
+                [{"role": "user", "content": "test"}], "https://example.test/v1", "key", "model",
+                prompt_cache_key="workflow", prompt_cache_options={"mode": "explicit"},
+            )
+        retry_payload = json.loads(urlopen.call_args_list[-1].args[0].data.decode())
+        self.assertNotIn("prompt_cache_key", retry_payload)
+        self.assertTrue(result["cache_compatibility"]["fallback_used"])
+        self.assertIsNone(result["cached_tokens"])
 
 
 if __name__ == "__main__":

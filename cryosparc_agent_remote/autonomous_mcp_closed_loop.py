@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-server", default=DEFAULT_MCP_SERVER)
     parser.add_argument("--max-rounds", type=int, default=8)
     parser.add_argument("--max-kb-tool-calls", type=int, default=4, help="Maximum read-only KB calls per decision.")
-    parser.add_argument("--kb-tool-policy", choices=["required", "auto", "disabled"], default="required", help="KB policy: require, allow, or strictly disable KB tools.")
+    parser.add_argument("--kb-tool-policy", choices=["required", "optional", "auto", "disabled"], default="required", help="KB policy: require, optionally allow, or strictly disable KB tools. 'auto' is a backward-compatible alias for 'optional'.")
     parser.add_argument("--max-validation-failures", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -139,6 +139,9 @@ def parse_args() -> argparse.Namespace:
         help="Attach class-average contact sheets for Select 2D decisions.",
     )
     parser.add_argument("--vision-max-classes", type=int, default=50)
+    parser.add_argument("--cryosift", action="store_true", help="Attach a completed Class 2D CryoSift score observation to the next Model context.")
+    parser.add_argument("--cryosift-threshold", type=float, default=3.0)
+    parser.add_argument("--cryosift-timeout-seconds", type=int, default=1800)
     return parser.parse_args()
 
 
@@ -231,6 +234,11 @@ async def main_async() -> None:
                 context_args,
             )
             model_input["failure_context"] = build_failure_context(feedback_to_model)
+            if feedback_to_model and feedback_to_model.get("feedback_type") == "job_result":
+                cryosift_observation = (feedback_to_model.get("payload") or {}).get("cryosift_observation")
+                if cryosift_observation is not None:
+                    # This is an observation only. It never chooses or alters a workflow action.
+                    model_input["tool_evidence"] = {"cryosift": cryosift_observation}
             candidate_context = await call_tool_json(
                 session,
                 "get_candidate_actions",
@@ -252,71 +260,45 @@ async def main_async() -> None:
                 break
 
             visual_context = None
-            if args.vision and args.backend == "api" and current_node:
-                last_action = model_input.get("current_state", {}).get("last_action")
-                candidate_types = {
-                    item.get("job_type")
-                    for item in candidate_context.get("candidate_actions", [])
+            visual_failure = None
+            if args.vision and args.backend != "api":
+                visual_failure = {
+                    "source": "vision",
+                    "status": "unsupported",
+                    "message": "The local backend does not support multimodal image_url messages.",
                 }
-                if last_action == "class_2D_new" and "select_2D" in candidate_types:
-                    comparison_uids = []
-                    for item in candidate_context.get("candidate_actions", []):
-                        if item.get("job_type") != "select_2D":
-                            continue
-                        for job_uid in item.get("class2d_comparison_group") or []:
-                            if job_uid and job_uid not in comparison_uids:
-                                comparison_uids.append(job_uid)
-                    if len(comparison_uids) > 1:
-                        contexts = []
-                        for job_uid in comparison_uids:
-                            contexts.append(await call_tool_json(
-                                session,
-                                "get_class_average_visual_context",
-                                {
-                                    "project_uid": args.project,
-                                    "job_uid": job_uid,
-                                    "max_classes": args.vision_max_classes,
-                                },
-                            ))
-                        visual_context = {
-                            "kind": "class_average_comparison",
-                            "contexts": contexts,
-                        }
-                    else:
-                        visual_context = await call_tool_json(
-                            session,
-                            "get_class_average_visual_context",
-                            {
-                                "project_uid": args.project,
-                                "job_uid": current_node,
-                                "max_classes": args.vision_max_classes,
-                            },
-                        )
-                elif last_action in {"blob_picker_gpu", "auto_blob_picker_gpu"} and "inspect_picks_v2" in candidate_types:
-                    files = model_input.get("dataset_info", {}).get("available_input_files") or {}
-                    micrograph_path = files.get("micrograph_blob_paths")
-                    micrograph_root = None
-                    if isinstance(micrograph_path, str) and micrograph_path:
-                        micrograph_root = str(Path(micrograph_path).expanduser().parent)
-                    visual_context = await call_tool_json(
-                        session,
-                        "get_pick_inspection_visual_context",
-                        {
-                            "project_uid": args.project,
-                            "job_uid": current_node,
-                            "max_micrographs": 8,
-                            "max_picks_per_micrograph": 600,
-                            "micrograph_root": micrograph_root,
-                        },
-                    )
-                if visual_context:
-                    round_log["visual_context"] = {
-                        "kind": visual_context.get("kind"),
-                        "source": visual_context.get("source"),
-                        "image_count": visual_context.get("image_count"),
-                        "class_ids": visual_context.get("class_ids"),
-                        "local_path": (visual_context.get("contact_sheet") or {}).get("local_path"),
-                    }
+            elif args.vision and current_node:
+                try:
+                    last_action = model_input.get("current_state", {}).get("last_action")
+                    candidate_types = {item.get("job_type") for item in candidate_context.get("candidate_actions", [])}
+                    if last_action == "class_2D_new" and "select_2D" in candidate_types:
+                        comparison_uids = []
+                        for item in candidate_context.get("candidate_actions", []):
+                            if item.get("job_type") == "select_2D":
+                                for job_uid in item.get("class2d_comparison_group") or []:
+                                    if job_uid and job_uid not in comparison_uids:
+                                        comparison_uids.append(job_uid)
+                        if len(comparison_uids) > 1:
+                            contexts = [await call_tool_json(session, "get_class_average_visual_context", {"project_uid": args.project, "job_uid": job_uid, "max_classes": args.vision_max_classes}) for job_uid in comparison_uids]
+                            visual_context = {"kind": "class_average_comparison", "contexts": contexts}
+                        else:
+                            visual_context = await call_tool_json(session, "get_class_average_visual_context", {"project_uid": args.project, "job_uid": current_node, "max_classes": args.vision_max_classes})
+                    elif last_action in {"blob_picker_gpu", "auto_blob_picker_gpu"} and "inspect_picks_v2" in candidate_types:
+                        files = model_input.get("dataset_info", {}).get("available_input_files") or {}
+                        micrograph_path = files.get("micrograph_blob_paths")
+                        micrograph_root = str(Path(micrograph_path).expanduser().parent) if isinstance(micrograph_path, str) and micrograph_path else None
+                        visual_context = await call_tool_json(session, "get_pick_inspection_visual_context", {"project_uid": args.project, "job_uid": current_node, "max_micrographs": 8, "max_picks_per_micrograph": 600, "micrograph_root": micrograph_root})
+                    if visual_context and not visual_context_has_data_url(visual_context):
+                        visual_failure = {"source": "vision", "status": "no_image", "message": "The visual MCP tool returned no contact-sheet data_url.", "raw": visual_context}
+                        visual_context = None
+                except Exception as exc:
+                    visual_failure = {"source": "vision", "status": "tool_error", "error_type": type(exc).__name__, "message": str(exc)}
+                    visual_context = None
+            if visual_failure:
+                model_input["failure_context"] = observation_failure_context(visual_failure)
+                round_log["visual_failure"] = visual_failure
+            if visual_context:
+                round_log["visual_context"] = {"kind": visual_context.get("kind"), "source": visual_context.get("source"), "image_count": visual_context.get("image_count"), "class_ids": visual_context.get("class_ids"), "local_path": (visual_context.get("contact_sheet") or {}).get("local_path")}
             messages = build_autonomous_prompt(
                 model_input=model_input,
                 candidate_context=candidate_context,
@@ -376,6 +358,7 @@ async def main_async() -> None:
                             api_model_call,
                             kb_executor,
                             max_tool_calls=args.max_kb_tool_calls,
+                            required=args.kb_tool_policy == "required",
                         )
                     model_call["request_id"] = f"round_{round_index:02d}"
                 else:
@@ -577,6 +560,19 @@ async def main_async() -> None:
                 break
 
             last_job = terminal_jobs[-1]
+            if args.cryosift and is_class2d_decision(decision):
+                cryosift_observation = await call_tool_json(
+                    session,
+                    "evaluate_2d_classes_with_cryosift",
+                    {
+                        "project_uid": args.project,
+                        "job_uid": last_job.get("job_uid"),
+                        "threshold": args.cryosift_threshold,
+                        "timeout_seconds": args.cryosift_timeout_seconds,
+                    },
+                )
+                last_job["cryosift_observation"] = cryosift_observation
+                round_log["cryosift_observation"] = cryosift_observation
             current_node = last_job.get("job_uid") or current_node
             write_json(
                 run_dir / "checkpoint.json",
@@ -662,6 +658,8 @@ def build_autonomous_prompt(
         },
     ]
     if visual_context:
+        if not visual_context_has_data_url(visual_context):
+            return messages
         if visual_context.get("kind") == "class_average_comparison":
             contexts = visual_context.get("contexts") or []
             content: list[dict[str, Any]] = [{
@@ -707,7 +705,8 @@ def build_autonomous_prompt(
                 },
                 {"type": "image_url", "image_url": {"url": visual_context["contact_sheet"]["data_url"]}},
             ]
-        messages.append({"role": "user", "content": content})
+        if any(item.get("type") == "image_url" for item in content):
+            messages.append({"role": "user", "content": content})
     return messages
 
 
@@ -723,6 +722,26 @@ def build_prompt_cache_options(args: argparse.Namespace) -> dict[str, Any] | Non
     if args.api_prompt_cache_mode != "explicit":
         return None
     return {"mode": "explicit", "ttl": args.api_prompt_cache_ttl}
+
+
+def visual_context_has_data_url(visual_context: dict[str, Any]) -> bool:
+    if visual_context.get("kind") == "class_average_comparison":
+        return any(((item.get("contact_sheet") or {}).get("data_url")) for item in visual_context.get("contexts") or [])
+    return bool((visual_context.get("contact_sheet") or {}).get("data_url"))
+
+
+def observation_failure_context(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "has_failure": True,
+        "failure_stage": "observation",
+        "execution_error": payload,
+        "attempt_history": [{"failure_stage": "observation", "message": payload.get("message", "")}],
+    }
+
+
+def is_class2d_decision(decision: dict[str, Any]) -> bool:
+    action = str(decision.get("action") or decision.get("job_type") or "").lower()
+    return action in {"class_2d_new", "class2d", "class_2d"}
 
 
 class ModelWorker:

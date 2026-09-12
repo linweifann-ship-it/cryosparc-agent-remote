@@ -36,6 +36,13 @@ class VisionMessagePathTests(unittest.TestCase):
         self.assertEqual(content[1]["image_url"]["url"], "data:image/png;base64,CLASSES")
         self.assertIn("Select 2D", content[0]["text"])
 
+    def test_missing_visual_data_does_not_add_fake_image_evidence(self):
+        messages = build_autonomous_prompt(
+            {"current_state": {"last_node_id": "J20"}}, {"candidate_actions": []}, 0,
+            visual_context={"kind": "class_average", "contact_sheet": {}}, kb_tool_policy="disabled",
+        )
+        self.assertFalse(any(isinstance(message.get("content"), list) for message in messages))
+
 
 if __name__ == "__main__":
     unittest.main()

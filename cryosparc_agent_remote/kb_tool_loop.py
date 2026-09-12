@@ -62,6 +62,7 @@ async def run_kb_tool_call_loop(
     model_call: Callable[[list[dict[str, Any]], list[dict[str, Any]]], Awaitable[dict[str, Any]]],
     tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
     max_tool_calls: int = 4,
+    required: bool = False,
 ) -> dict[str, Any]:
     """Let the model request KB evidence, then continue until final JSON text."""
     working = list(messages)
@@ -72,6 +73,8 @@ async def run_kb_tool_call_loop(
         result = await model_call(working, tools)
         tool_calls = result.get("tool_calls") or []
         if not tool_calls:
+            if required and not trace:
+                raise RuntimeError("KB policy is required but the Model returned a decision before retrieving KB evidence.")
             result["tool_trace"] = trace
             result["messages_after_tools"] = working
             return result

@@ -1587,7 +1587,12 @@ def print_run_summary(summary: dict[str, Any], run_dir: Path) -> None:
 
 
 def main() -> None:
-    asyncio.run(main_async())
+    # Keep this historical entrypoint and its hardened log helpers, but run the
+    # single maintained capability-complete loop from the package.
+    package_dir = Path(__file__).resolve().parents[1] / "cryosparc_agent_remote"
+    sys.path.insert(0, str(package_dir))
+    from autonomous_mcp_closed_loop import main as package_main
+    package_main()
 
 
 if __name__ == "__main__":

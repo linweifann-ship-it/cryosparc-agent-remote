@@ -217,26 +217,37 @@ def run_openai_compatible_model(
     if tool_choice:
         payload["tool_choice"] = tool_choice
     endpoint = api_base.rstrip("/") + "/chat/completions"
-    body = json.dumps(payload).encode("utf-8")
-    req = request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+    cache_compatibility = {
+        "requested": bool(prompt_cache_key or prompt_cache_options),
+        "fallback_used": False,
+        "status": "requested" if (prompt_cache_key or prompt_cache_options) else "not_requested",
+    }
     retryable_http_codes = {408, 429, 500, 502, 503, 504}
     attempts = 0
     while True:
         attempts += 1
+        req = request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            method="POST",
+        )
         try:
             with request.urlopen(req, timeout=timeout_seconds) as response:
                 raw_response = response.read().decode("utf-8")
             break
         except error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
+            if (
+                cache_compatibility["requested"]
+                and not cache_compatibility["fallback_used"]
+                and exc.code in {400, 422}
+                and "prompt_cache" in error_body.lower()
+            ):
+                payload.pop("prompt_cache_key", None)
+                payload.pop("prompt_cache_options", None)
+                cache_compatibility.update({"fallback_used": True, "status": "provider_rejected_cache_parameters", "error": error_body})
+                continue
             if exc.code not in retryable_http_codes or attempts > max_retries:
                 raise RuntimeError(
                     f"OpenAI-compatible request failed with HTTP {exc.code}: {error_body}"
@@ -259,6 +270,11 @@ def run_openai_compatible_model(
 
     content = message.get("content")
     raw_text = normalize_message_content(content) if content is not None else ""
+    usage = parsed.get("usage")
+    cached_tokens = None
+    if isinstance(usage, dict):
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+        cached_tokens = details.get("cached_tokens") if isinstance(details, dict) else None
     return {
         "endpoint": endpoint,
         "request_payload": payload,
@@ -267,6 +283,9 @@ def run_openai_compatible_model(
         "assistant_message": message,
         "tool_calls": message.get("tool_calls") or [],
         "attempts": attempts,
+        "usage": usage,
+        "cached_tokens": cached_tokens,
+        "cache_compatibility": cache_compatibility,
     }
 
 
