@@ -130,6 +130,23 @@ class V2DecisionAdapterTests(unittest.TestCase):
             "particles_selected",
         )
 
+    def test_legacy_actions_shape_keeps_candidate_validation_path(self):
+        decision = {
+            "schema_version": "2.0",
+            "decision_type": "branch",
+            "actions": [{
+                "action": "class_2D_new",
+                "parameters": {"class2D_K": 64},
+            }],
+        }
+
+        result = adapt_v2_decision_to_internal(decision, candidate_actions())
+
+        self.assertTrue(result["success"])
+        action = result["internal_decision"]["selected_actions"][0]
+        self.assertEqual(action["action_id"], "forward_J9")
+        self.assertEqual(action["parameters"]["class2D_K"], 64)
+
     def test_duplicate_same_type_candidates_prefer_original_completed_job(self):
         result = adapt_v2_decision_to_internal(
             v2_forward_decision(),

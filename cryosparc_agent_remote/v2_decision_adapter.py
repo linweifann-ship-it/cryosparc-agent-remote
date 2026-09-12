@@ -240,12 +240,23 @@ def adapt_non_action_decision(v2_decision: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_requested_actions(v2_decision: dict[str, Any]) -> list[dict[str, Any]]:
-    """Support both compact single-action and explicit selected_actions shapes."""
+    """Support compact, explicit, and legacy multi-action decision shapes."""
     selected = v2_decision.get("selected_actions")
     if isinstance(selected, list):
         return [
             action
             for action in selected
+            if isinstance(action, dict)
+        ]
+
+    # Preserve OpenAI-compatible models that emit ``actions`` for an
+    # exploratory branch. Each action still passes ordinary candidate matching
+    # and validation before any execution is considered.
+    legacy_actions = v2_decision.get("actions")
+    if isinstance(legacy_actions, list):
+        return [
+            action
+            for action in legacy_actions
             if isinstance(action, dict)
         ]
 
