@@ -212,7 +212,7 @@ def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]
         if getattr(param, "required_param", False):
             item["required"] = True
         if getattr(param, "default", None) is not None:
-            item["default"] = param.default
+            item["default"] = normalize_parameter_default(param.default, value_type)
         enum = getattr(param, "enum", None)
         if enum:
             item["enum"] = list(enum)
@@ -224,6 +224,14 @@ def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]
             item["maximum"] = upper
         template[name] = item
     return template
+
+
+def normalize_parameter_default(value: Any, value_type: str) -> Any:
+    """Normalize legacy Registry defaults to the exposed JSON schema type."""
+    if value_type == "boolean" and isinstance(value, int) and not isinstance(value, bool):
+        if value in (0, 1):
+            return bool(value)
+    return value
 
 
 def registry_param_type(param: Any) -> str:
@@ -255,6 +263,7 @@ def build_registry_candidate(
         interactive = local_spec["interactive"]
         requires_approval = local_spec["requires_approval"]
     default_lane = os.getenv("CRYOAGENT_GPU_LANE", DEFAULT_GPU_LANE) if requires_gpu else None
+    parameter_template = registry_parameter_template(registry_spec)
     return {
         "action_id": f"registry_{current_node['cryosparc_job_uid']}_{job_type}",
         "action_type": "forward",
@@ -269,11 +278,11 @@ def build_registry_candidate(
         "blocked_by": [],
         "required_inputs": required_inputs,
         "missing_required_inputs": [],
-        "parameter_template": registry_parameter_template(registry_spec),
+        "parameter_template": parameter_template,
         "default_parameters": {
-            name: value.default
-            for name, value in getattr(registry_spec, "params", {}).items()
-            if getattr(value, "default", None) is not None
+            name: parameter["default"]
+            for name, parameter in parameter_template.items()
+            if "default" in parameter
         },
         "registry_source": "cryosparc_job_register",
         "job_spec_metadata": {

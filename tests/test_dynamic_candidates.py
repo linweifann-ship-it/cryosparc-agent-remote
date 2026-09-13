@@ -47,6 +47,29 @@ class DynamicCandidateTests(unittest.TestCase):
         self.assertEqual(template["diameter"]["minimum"], 10)
         self.assertEqual(template["diameter_max"]["type"], "number")
 
+    def test_registry_candidate_defaults_follow_schema_and_exclude_hidden(self):
+        spec = SimpleNamespace(
+            type="patch_ctf_estimation_multi",
+            title="Patch CTF",
+            category="ctf_estimation",
+            tags=["gpuEnabled", "multiGpu"],
+            interactive=False,
+            params={
+                "classic_mode": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=0, hidden=False, enum=None, ge=None, le=None),
+                "do_phase_shift_refine_only": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=1, hidden=False, enum=None, ge=None, le=None),
+                "do_plots": SimpleNamespace(type="integer", anyOf=[], required_param=False, default=1, hidden=True, enum=None, ge=None, le=None),
+                "compute_num_gpus": SimpleNamespace(type="integer", anyOf=[], required_param=False, default=1, hidden=False, enum=None, ge=None, le=None),
+            },
+        )
+        candidate = build_registry_candidate(
+            {"cryosparc_job_uid": "J1", "workflow_node_id": "J1"}, spec, {"exposures": []}
+        )
+        self.assertIs(candidate["parameter_template"]["classic_mode"]["default"], False)
+        self.assertIs(candidate["default_parameters"]["classic_mode"], False)
+        self.assertIs(candidate["default_parameters"]["do_phase_shift_refine_only"], True)
+        self.assertNotIn("do_plots", candidate["parameter_template"])
+        self.assertNotIn("do_plots", candidate["default_parameters"])
+
     def test_optional_registry_slots_do_not_block_particle_input(self):
         spec = SimpleNamespace(
             inputs=SimpleNamespace(root={

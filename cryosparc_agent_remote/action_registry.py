@@ -1545,12 +1545,20 @@ def validate_parameters(
 ) -> tuple[list[ValidationIssue], dict[str, Any]]:
     """Merge defaults with model-supplied parameters and validate the result."""
     issues: list[ValidationIssue] = []
+    if not template:
+        # Generic actions have no registry schema. Preserve their model-supplied
+        # parameters; candidate-bound actions take the schema-filtered path below.
+        return issues, dict(parameters)
     resolved = {
         name: spec["default"]
         for name, spec in template.items()
         if "default" in spec
     }
-    resolved.update(parameters)
+    resolved.update({
+        name: value
+        for name, value in parameters.items()
+        if name in template
+    })
 
     for name, spec in template.items():
         if spec.get("required") and resolved.get(name) is None:

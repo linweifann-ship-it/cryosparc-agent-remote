@@ -53,13 +53,10 @@ def adapt_v2_decision_to_internal(
                     "action_type": candidate["action_type"],
                     "workflow_node_id": candidate["workflow_node_id"],
                     "job_type": candidate["job_type"],
-                    "parameters": {
-                        **normalize_registry_defaults(
-                            candidate.get("default_parameters") or {},
-                            candidate.get("parameter_template") or {},
-                        ),
-                        **(requested.get("parameters") or {}),
-                    },
+                    # Model parameters are overrides only. Candidate/schema
+                    # defaults are materialized once by validation after the
+                    # candidate has been bound.
+                    "parameters": requested.get("parameters") or {},
                     "connections": requested.get("connections"),
                 }
             )
@@ -101,19 +98,6 @@ def adapt_v2_decision_to_internal(
             "requested_inputs": v2_decision.get("requested_inputs") or [],
         },
     }
-
-
-def normalize_registry_defaults(
-    defaults: dict[str, Any],
-    parameter_template: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    """Normalize legacy CryoSPARC registry defaults without changing model input."""
-    normalized = dict(defaults)
-    for name, value in normalized.items():
-        spec = parameter_template.get(name) or {}
-        if spec.get("type") == "boolean" and isinstance(value, int) and value in (0, 1):
-            normalized[name] = bool(value)
-    return normalized
 
 
 def execute_v2_model_decision_payload(

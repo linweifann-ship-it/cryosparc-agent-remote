@@ -207,10 +207,7 @@ class V2DecisionAdapterTests(unittest.TestCase):
         decision = {"decision_type": "forward", "action": "import_micrographs", "parameters": {}}
         result = adapt_v2_decision_to_internal(decision, candidates)
         self.assertTrue(result["success"])
-        self.assertEqual(
-            result["internal_decision"]["selected_actions"][0]["parameters"]["psize_A"],
-            0.6575,
-        )
+        self.assertEqual(result["internal_decision"]["selected_actions"][0]["parameters"], {})
 
     def test_empty_workspace_initial_import_binds_candidate_and_keeps_defaults(self):
         defaults = {
@@ -248,6 +245,7 @@ class V2DecisionAdapterTests(unittest.TestCase):
         action = adapter_result["internal_decision"]["selected_actions"][0]
         self.assertEqual(action["action_id"], "initial_import_micrographs")
         self.assertEqual(action["workflow_node_id"], "initial:import_micrographs")
+        self.assertEqual(action["parameters"], {})
 
         validation = validate_model_decision_payload(
             adapter_result["internal_decision"],
@@ -265,14 +263,15 @@ class V2DecisionAdapterTests(unittest.TestCase):
             "action_type": "forward",
             "workflow_node_id": "J19",
             "job_type": "homo_refine_new",
+            "execution_mode": "create_job",
             "parameter_template": {
                 "refine_do_marg": {"type": "boolean", "default": False},
                 "compute_use_ssd": {"type": "boolean", "default": False},
                 "refine_symmetry": {"type": "string", "default": "D7"},
             },
             "default_parameters": {
-                "refine_do_marg": 0,
-                "compute_use_ssd": 1,
+                "refine_do_marg": False,
+                "compute_use_ssd": True,
                 "refine_symmetry": "D7",
             },
         }]
@@ -284,8 +283,37 @@ class V2DecisionAdapterTests(unittest.TestCase):
         result = adapt_v2_decision_to_internal(decision, candidates)
         self.assertTrue(result["success"])
         params = result["internal_decision"]["selected_actions"][0]["parameters"]
-        self.assertIs(params["refine_do_marg"], False)
-        self.assertIs(params["compute_use_ssd"], True)
+        self.assertEqual(params, {})
+        validation = validate_model_decision_payload(
+            result["internal_decision"], candidate_actions=candidates
+        )
+        self.assertTrue(validation["success"])
+        resolved = validation["resolved_actions"][0]["resolved_parameters"]
+        self.assertIs(resolved["refine_do_marg"], False)
+        self.assertIs(resolved["compute_use_ssd"], True)
+
+    def test_unknown_parameter_is_not_resolved_for_execution(self):
+        candidates = candidate_actions()
+        decision = v2_forward_decision()
+        decision["parameters"] = {"class2D_K": 64, "do_plots": 1}
+        adapted = adapt_v2_decision_to_internal(decision, candidates)
+        validation = validate_model_decision_payload(
+            adapted["internal_decision"], candidate_actions=candidates
+        )
+        self.assertTrue(validation["success"])
+        self.assertTrue(any(issue["code"] == "unknown_parameter" for issue in validation["warnings"]))
+        self.assertNotIn("do_plots", validation["resolved_actions"][0]["resolved_parameters"])
+
+    def test_model_override_wins_over_materialized_default(self):
+        candidates = candidate_actions()
+        decision = v2_forward_decision()
+        decision["parameters"] = {"class2D_K": 64}
+        adapted = adapt_v2_decision_to_internal(decision, candidates)
+        validation = validate_model_decision_payload(
+            adapted["internal_decision"], candidate_actions=candidates
+        )
+        self.assertTrue(validation["success"])
+        self.assertEqual(validation["resolved_actions"][0]["resolved_parameters"]["class2D_K"], 64)
 
     def test_explicit_integer_boolean_remains_invalid(self):
         candidates = [{
