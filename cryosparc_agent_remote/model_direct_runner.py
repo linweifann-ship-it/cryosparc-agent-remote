@@ -215,8 +215,8 @@ def run_openai_compatible_model(
         payload["prompt_cache_options"] = prompt_cache_options
     if tools:
         payload["tools"] = tools
-    if tool_choice:
-        payload["tool_choice"] = tool_choice
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
     endpoint = api_base.rstrip("/") + "/chat/completions"
     cache_requested = payload_has_prompt_cache_hints(payload)
     cache_compatibility = {

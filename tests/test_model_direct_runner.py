@@ -146,6 +146,59 @@ class ModelDirectRunnerTests(unittest.TestCase):
         self.assertEqual(request_payload["prompt_cache_options"]["mode"], "explicit")
         self.assertEqual(request_payload["messages"][0]["content"][0]["prompt_cache_breakpoint"]["mode"], "explicit")
 
+    def test_tool_choice_is_omitted_when_tools_are_absent(self):
+        request_payload = self._api_request_payload(tools=None, tool_choice="none")
+        self.assertNotIn("tools", request_payload)
+        self.assertNotIn("tool_choice", request_payload)
+
+    def test_tool_choice_is_omitted_when_tools_are_empty(self):
+        request_payload = self._api_request_payload(tools=[], tool_choice="none")
+        self.assertNotIn("tools", request_payload)
+        self.assertNotIn("tool_choice", request_payload)
+
+    def test_tool_choice_is_preserved_with_nonempty_tools(self):
+        tools = [{
+            "type": "function",
+            "function": {"name": "kb_lookup", "description": "lookup", "parameters": {"type": "object"}},
+        }]
+        request_payload = self._api_request_payload(tools=tools, tool_choice="auto")
+        self.assertEqual(request_payload["tools"], tools)
+        self.assertEqual(request_payload["tool_choice"], "auto")
+
+    def test_kb_disabled_ofx_request_has_no_illegal_tool_choice(self):
+        request_payload = self._api_request_payload(
+            tools=None,
+            tool_choice="none",
+            api_base="https://api.ofox.io/v1",
+            model_name="openai/gpt-5.6-sol",
+        )
+        self.assertNotIn("tool_choice", request_payload)
+        self.assertNotIn("prompt_cache_key", request_payload)
+        self.assertNotIn("prompt_cache_options", request_payload)
+
+    def _api_request_payload(
+        self,
+        *,
+        tools,
+        tool_choice,
+        api_base="https://example.test/v1",
+        model_name="model",
+    ):
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = b'{"choices":[{"message":{"content":"OK"}}]}'
+        with mock.patch("model_direct_runner.request.urlopen", return_value=response) as urlopen:
+            run_openai_compatible_model(
+                [{"role": "user", "content": "test"}],
+                api_base,
+                "key",
+                model_name,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+        return json.loads(urlopen.call_args.args[0].data.decode())
+
 
 if __name__ == "__main__":
     unittest.main()
