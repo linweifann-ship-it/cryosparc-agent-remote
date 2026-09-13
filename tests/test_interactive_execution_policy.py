@@ -74,12 +74,13 @@ class InteractiveExecutionPolicyTests(unittest.TestCase):
 
     @patch("job_executor.refresh_scheduling_plan")
     @patch("job_executor.cryosparc_client")
-    def test_interactive_action_dispatches_without_queue(self, mock_client, mock_schedule):
+    def test_interactive_action_queues_waits_and_finishes(self, mock_client, mock_schedule):
         mock_schedule.return_value = {
             "queue": {"will_queue": False, "lane": None, "hostname": None, "gpus": [], "cluster_vars": {}},
             "parameter_overrides": {}, "resource_config": {}, "snapshot": {}, "reason": "test",
         }
         job = MagicMock(uid="J9", status="building")
+        job.wait_for_status.return_value = "waiting"
         workspace = MagicMock()
         workspace.create_job.return_value = job
         mock_client.return_value.find_workspace.return_value = workspace
@@ -93,7 +94,33 @@ class InteractiveExecutionPolicyTests(unittest.TestCase):
             result = execute_job_action("P9", "W2", planned, dry_run=False)
         self.assertTrue(result["success"])
         self.assertEqual(result["job_uid"], "J9")
-        job.queue.assert_not_called()
+        job.queue.assert_called_once_with()
+        job.wait_for_status.assert_called_once_with("waiting", timeout=300)
+        job.interact.assert_called_once_with("finish", {}, refresh=True)
+
+    @patch("job_executor.refresh_scheduling_plan")
+    @patch("job_executor.cryosparc_client")
+    def test_select_2d_uses_the_same_interactive_lifecycle(self, mock_client, mock_schedule):
+        mock_schedule.return_value = {
+            "queue": {"will_queue": False, "lane": None, "hostname": None, "gpus": [], "cluster_vars": {}},
+            "parameter_overrides": {}, "resource_config": {}, "snapshot": {}, "reason": "test",
+        }
+        job = MagicMock(uid="J10", status="building")
+        job.wait_for_status.return_value = "waiting"
+        workspace = MagicMock()
+        workspace.create_job.return_value = job
+        mock_client.return_value.find_workspace.return_value = workspace
+        planned = {
+            "approval_required": False, "execution_mode": "interactive_mcp",
+            "mcp_tool_name": "execute_interactive_cryosparc_job", "job_type": "select_2D",
+            "connections": {}, "resolved_parameters": {}, "action_id": "registry_J8_select_2D",
+            "queue": {}, "resource_scheduling": {},
+        }
+        with patch("job_executor.register_submission"):
+            result = execute_job_action("P9", "W2", planned, dry_run=False)
+        self.assertTrue(result["success"])
+        job.queue.assert_called_once_with()
+        job.interact.assert_called_once_with("finish", {}, refresh=True)
 
     def test_non_interactive_action_remains_auto_executable(self):
         candidate = interactive_candidate("blob_picker_gpu")

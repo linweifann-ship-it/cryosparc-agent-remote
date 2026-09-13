@@ -271,9 +271,23 @@ def _submit_job_action(
             desc="Created by cryosparc_agent execute_model_decision.",
         )
         queue = planned_action["queue"]
+        interactive = planned_action.get("execution_mode") == "interactive_mcp"
         queued = False
         try:
-            if queue["will_queue"]:
+            if interactive:
+                # Interactive jobs must be started so CryoSPARC can enter its
+                # waiting state; unlike batch jobs, they are then finalized
+                # through the documented interactive endpoint instead of a
+                # second scheduler submission.
+                job.queue()
+                queued = True
+                status = job.wait_for_status("waiting", timeout=300)
+                if status != "waiting":
+                    raise RuntimeError(
+                        f"Interactive job did not reach waiting state: {status}"
+                    )
+                job.interact("finish", {}, refresh=True)
+            elif queue["will_queue"]:
                 if queue["lane"]:
                     job.queue(
                         lane=queue["lane"],
