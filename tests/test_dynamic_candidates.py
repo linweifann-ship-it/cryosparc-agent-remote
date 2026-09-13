@@ -31,6 +31,18 @@ class DynamicCandidateTests(unittest.TestCase):
         self.assertEqual(action["execution_mode"], "interactive_mcp")
         self.assertEqual(action["mcp_tool_name"], "execute_interactive_cryosparc_job")
 
+    def test_manual_picker_is_blocked_before_model_validation(self):
+        spec = SimpleNamespace(
+            type="manual_picker_v2", title="Manual Picker", category="particle_picking",
+            tags=["interactive"], interactive=True, params={},
+        )
+        action = build_registry_candidate(
+            {"cryosparc_job_uid": "J1", "workflow_node_id": "J1"}, spec, {"micrographs": []}
+        )
+        self.assertFalse(action["available"])
+        self.assertEqual(action["interactive_contract"]["completion_action"], "begin_extract")
+        self.assertIn("human-created picks", action["blocked_by"][0])
+
     def test_registry_parameter_types_and_constraints_are_preserved(self):
         spec = SimpleNamespace(
             type="blob_picker_gpu",

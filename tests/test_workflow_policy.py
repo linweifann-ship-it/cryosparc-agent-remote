@@ -1,6 +1,7 @@
 import unittest
 
 from workflow_policy import (
+    apply_autonomous_picker_preference,
     annotate_candidates,
     build_decision_guidance,
     infer_current_stage,
@@ -64,6 +65,23 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]["workflow_stage"], "ctf_estimation")
         self.assertEqual(result[0]["workflow_policy_recommendation"], "preferred_next_stage")
+
+    def test_automated_picker_blocks_manual_fallback_without_diameter_special_case(self):
+        candidates = [
+            {"job_type": "learned_picker_gpu", "available": True},
+            {"job_type": "manual_picker_v2", "description": "Manual Picker", "available": True},
+        ]
+        selectable, blocked = apply_autonomous_picker_preference(candidates)
+        self.assertEqual([item["job_type"] for item in selectable], ["learned_picker_gpu"])
+        self.assertEqual(blocked[0]["job_type"], "manual_picker_v2")
+        self.assertIn("heuristic estimate", blocked[0]["blocked_by"][-1])
+
+    def test_automated_picker_guidance_allows_explicit_heuristics(self):
+        guidance = build_decision_guidance(
+            {}, {}, None, [{"job_type": "learned_picker_gpu", "available": True}]
+        )
+        self.assertEqual(guidance["automated_picking"]["priority"], "preferred")
+        self.assertIn("estimated or assumed", guidance["automated_picking"]["model_instruction"])
 
 
 if __name__ == "__main__":

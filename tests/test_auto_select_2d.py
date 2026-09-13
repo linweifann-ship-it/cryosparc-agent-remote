@@ -17,6 +17,8 @@ class AutoSelect2DTests(unittest.TestCase):
         result = apply_auto_select_2d_policy(action, state)
         self.assertEqual(result["default_parameters"]["selected_templates"], ",".join(str(i) for i in range(43)))
         self.assertFalse(result["job_spec_metadata"]["interactive"])
+        self.assertEqual(result["execution_mode"], "create_job")
+        self.assertIsNone(result.get("mcp_tool_name"))
         self.assertEqual(result["auto_policy"]["selected_class_count"], 43)
 
     def test_ranks_classes_by_resolution_for_particle_target(self):

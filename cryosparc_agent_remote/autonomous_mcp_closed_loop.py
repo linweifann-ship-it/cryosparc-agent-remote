@@ -1024,6 +1024,10 @@ def build_failure_context(feedback: dict[str, Any] | None) -> dict[str, Any] | N
 
 
 def map_failure_stage(feedback_type: str | None, payload: Any) -> str:
+    if feedback_type == "execution_failed_or_no_job" and isinstance(payload, dict):
+        explicit_stage = payload.get("failure_stage")
+        if explicit_stage:
+            return str(explicit_stage)
     if feedback_type == "json_parse_failed":
         return "json_parse"
     if feedback_type == "v2_validation_failed":

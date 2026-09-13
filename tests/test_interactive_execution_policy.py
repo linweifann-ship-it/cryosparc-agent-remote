@@ -1,7 +1,8 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from action_registry import execute_model_decision_payload
+from interactive_contracts import interactive_contract_for
 from job_executor import execute_job_action
 
 
@@ -50,6 +51,19 @@ def decision_for(candidate):
 
 
 class InteractiveExecutionPolicyTests(unittest.TestCase):
+    def test_v5_contracts_are_job_type_specific(self):
+        self.assertEqual(
+            interactive_contract_for("inspect_picks_v2")["completion_action"],
+            "shutdown_interactive",
+        )
+        self.assertEqual(
+            interactive_contract_for("select_2D")["completion_action"],
+            "finish",
+        )
+        manual = interactive_contract_for("manual_picker_v2")
+        self.assertEqual(manual["completion_action"], "begin_extract")
+        self.assertFalse(manual["autonomous"])
+
     def test_inspect_picks_is_autonomous_and_uses_dedicated_dispatch(self):
         candidate = interactive_candidate()
         result = execute_model_decision_payload(decision_for(candidate), [candidate])
@@ -74,20 +88,24 @@ class InteractiveExecutionPolicyTests(unittest.TestCase):
 
     @patch("job_executor.refresh_scheduling_plan")
     @patch("job_executor.cryosparc_client")
-    def test_interactive_action_queues_waits_and_finishes(self, mock_client, mock_schedule):
+    def test_inspect_picks_uses_v5_threshold_then_shutdown_contract(self, mock_client, mock_schedule):
         mock_schedule.return_value = {
             "queue": {"will_queue": False, "lane": None, "hostname": None, "gpus": [], "cluster_vars": {}},
             "parameter_overrides": {}, "resource_config": {}, "snapshot": {}, "reason": "test",
         }
         job = MagicMock(uid="J9", status="building")
         job.wait_for_status.return_value = "waiting"
+        job.interact.side_effect = [
+            {"ncc_score_thresh": 0.1, "lpower_thresh_min": 10, "lpower_thresh_max": 90, "is_filament": False},
+            {"success": True}, {"success": True},
+        ]
         workspace = MagicMock()
         workspace.create_job.return_value = job
         mock_client.return_value.find_workspace.return_value = workspace
         planned = {
             "approval_required": False, "execution_mode": "interactive_mcp",
             "mcp_tool_name": "execute_interactive_cryosparc_job", "job_type": "inspect_picks_v2",
-            "connections": {}, "resolved_parameters": {}, "action_id": "registry_J8_inspect_picks_v2",
+            "connections": {}, "resolved_parameters": {"ncc_score_thresh": 0.2, "lpower_thresh_min": 20}, "action_id": "registry_J8_inspect_picks_v2",
             "queue": {}, "resource_scheduling": {},
         }
         with patch("job_executor.register_submission"):
@@ -96,7 +114,11 @@ class InteractiveExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(result["job_uid"], "J9")
         job.queue.assert_called_once_with()
         job.wait_for_status.assert_called_once_with("waiting", timeout=300)
-        job.interact.assert_called_once_with("finish", {}, refresh=True)
+        self.assertEqual(job.interact.call_args_list, [
+            call("get_interactive_info", {}),
+            call("set_thresholds", {"ncc_score_thresh": 0.2, "lpower_thresh_min": 20, "lpower_thresh_max": 90}),
+            call("shutdown_interactive", {}, refresh=True),
+        ])
 
     @patch("job_executor.refresh_scheduling_plan")
     @patch("job_executor.cryosparc_client")
@@ -121,6 +143,16 @@ class InteractiveExecutionPolicyTests(unittest.TestCase):
         self.assertTrue(result["success"])
         job.queue.assert_called_once_with()
         job.interact.assert_called_once_with("finish", {}, refresh=True)
+
+    def test_manual_picker_is_rejected_before_create(self):
+        planned = {
+            "approval_required": False, "execution_mode": "interactive_mcp",
+            "mcp_tool_name": "execute_interactive_cryosparc_job", "job_type": "manual_picker_v2",
+            "connections": {}, "resolved_parameters": {}, "action_id": "registry_J8_manual_picker_v2",
+        }
+        result = execute_job_action("P9", "W2", planned, dry_run=False)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "interactive_contract_unavailable")
 
     def test_non_interactive_action_remains_auto_executable(self):
         candidate = interactive_candidate("blob_picker_gpu")

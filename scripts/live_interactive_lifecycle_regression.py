@@ -39,16 +39,37 @@ def select_candidate(project_uid, workspace_uid, source_job_uid, target):
     return candidate, candidates
 
 
+def candidate_connections(candidate):
+    """Materialize Registry input sources into the V2 decision connection shape."""
+    connections = {}
+    for slot, sources in (candidate.get("required_inputs") or {}).items():
+        if not sources:
+            raise ValueError(f"mandatory input {slot!r} has no source connection")
+        source = sources[0]
+        job_uid = source.get("source_job_uid")
+        output = source.get("source_output")
+        if not job_uid or not output:
+            raise ValueError(f"mandatory input {slot!r} has incomplete source connection")
+        connections[slot] = {"source_job_uid": job_uid, "source_output": output}
+    return connections
+
+
 def main():
     args = parse_args()
     candidate, candidates = select_candidate(args.project, args.workspace, args.source_job, args.target)
+    try:
+        connections = candidate_connections(candidate)
+    except ValueError as exc:
+        print(json.dumps({"result": "FAIL", "stage": "precreate_connections", "error": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps({"stage": "precreate_connections", "connections": connections}, ensure_ascii=False))
     decision = {
         "schema_version": "1.0", "decision_type": "forward", "reason": "interactive lifecycle regression",
         "confidence": 1.0, "risk_flags": [], "evidence": ["Existing completed source Job selected by regression CLI."],
         "selected_actions": [{
             "action_id": candidate["action_id"], "action_type": candidate["action_type"],
             "workflow_node_id": candidate["workflow_node_id"], "job_type": candidate["job_type"],
-            "parameters": {}, "connections": {},
+            "parameters": {}, "connections": connections,
         }],
     }
     execution = execute_model_decision_payload(

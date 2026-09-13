@@ -4,6 +4,7 @@ import os
 
 from cryosparc_client import cryosparc_client
 from job_specs import get_job_spec
+from interactive_contracts import interactive_contract_for
 from resource_scheduler import (
     apply_resource_overrides,
     build_scheduling_plan,
@@ -238,7 +239,66 @@ def execute_interactive_job_action(
                 "path": None,
             }],
         }
+    contract = interactive_contract_for(planned_action["job_type"])
+    if not contract or not contract.get("autonomous"):
+        return {
+            "success": False,
+            "dry_run": False,
+            "status": "interactive_contract_unavailable",
+            "planned_action": planned_action,
+            "issues": [{
+                "severity": "error",
+                "code": "interactive_contract_unavailable",
+                "message": (
+                    (contract or {}).get("reason")
+                    or "No documented autonomous interactive contract is available."
+                ),
+                "path": "job_type",
+            }],
+        }
     return _submit_job_action(project_uid, workspace_uid, planned_action)
+
+
+def finish_interactive_job(job: Any, planned_action: dict[str, Any]) -> None:
+    """Complete a waiting job through its explicit CryoSPARC v5 UI contract."""
+    contract = interactive_contract_for(planned_action["job_type"])
+    if not contract or not contract.get("autonomous"):
+        raise RuntimeError("No autonomous interactive completion contract is available.")
+    if planned_action["job_type"] == "select_2D":
+        # The v5 UI saves class selections incrementally, then calls finish with
+        # an empty payload. selected_templates instead skips the interactive UI.
+        job.interact(contract["completion_action"], {}, refresh=True)
+        return
+    if planned_action["job_type"] != "inspect_picks_v2":
+        raise RuntimeError("Interactive contract has no autonomous completion handler.")
+
+    # Inspect Picks first loads its UI state, applies any Model-selected
+    # thresholds while retaining unspecified UI defaults, then shuts down.
+    interactive_info = job.interact(contract["state_action"], {})
+    if not isinstance(interactive_info, dict):
+        raise RuntimeError("Inspect Picks returned no interactive state.")
+    requested = planned_action.get("resolved_parameters") or {}
+
+    def threshold_value(name: str) -> Any:
+        value = requested.get(name, interactive_info.get(name))
+        if value is None:
+            raise RuntimeError(
+                f"Inspect Picks interactive state is missing required threshold {name!r}."
+            )
+        return value
+
+    thresholds = {
+        "ncc_score_thresh": threshold_value("ncc_score_thresh"),
+        "lpower_thresh_min": threshold_value("lpower_thresh_min"),
+        "lpower_thresh_max": threshold_value("lpower_thresh_max"),
+    }
+    update_action = contract["update_action"]
+    if interactive_info.get("is_filament"):
+        thresholds["curv_thresh"] = threshold_value("curv_thresh")
+        thresholds["sinu_thresh"] = threshold_value("sinu_thresh")
+        update_action = contract["filament_update_action"]
+    job.interact(update_action, thresholds)
+    job.interact(contract["completion_action"], {}, refresh=True)
 
 
 def _submit_job_action(
@@ -273,6 +333,7 @@ def _submit_job_action(
         queue = planned_action["queue"]
         interactive = planned_action.get("execution_mode") == "interactive_mcp"
         queued = False
+        failure_stage = "queue"
         try:
             if interactive:
                 # Interactive jobs must be started so CryoSPARC can enter its
@@ -281,12 +342,14 @@ def _submit_job_action(
                 # second scheduler submission.
                 job.queue()
                 queued = True
+                failure_stage = "waiting"
                 status = job.wait_for_status("waiting", timeout=300)
                 if status != "waiting":
                     raise RuntimeError(
                         f"Interactive job did not reach waiting state: {status}"
                     )
-                job.interact("finish", {}, refresh=True)
+                failure_stage = "interaction"
+                finish_interactive_job(job, planned_action)
             elif queue["will_queue"]:
                 if queue["lane"]:
                     job.queue(
@@ -305,7 +368,10 @@ def _submit_job_action(
                 "workspace_uid": workspace_uid, "job_uid": job.uid,
                 "job_type": planned_action["job_type"],
                 "created_job": {"job_uid": job.uid, "status": job.status},
-                "enqueue_failed": True, "error": str(exc),
+                "failure_stage": failure_stage,
+                "enqueue_failed": failure_stage == "queue",
+                "interaction_failed": failure_stage == "interaction",
+                "error": str(exc),
                 "error_type": type(exc).__name__, "planned_action": planned_action,
                 "resource_scheduling": {
                     "logical_job": logical_record.__dict__,

@@ -136,6 +136,58 @@ def annotate_candidates(
     return annotated
 
 
+def is_manual_picker_candidate(candidate: Dict[str, Any]) -> bool:
+    """Recognize manual picker actions from Registry metadata without job-specific IDs."""
+    text = " ".join([
+        str(candidate.get("job_type") or ""),
+        str(candidate.get("description") or ""),
+    ]).lower()
+    return "manual" in text and "picker" in text
+
+
+def is_automated_picker_candidate(candidate: Dict[str, Any]) -> bool:
+    """Recognize non-manual particle-picking actions across Registry variants."""
+    if is_manual_picker_candidate(candidate):
+        return False
+    metadata = candidate.get("job_spec_metadata") or {}
+    category = str(metadata.get("category") or "").lower()
+    job_type = str(candidate.get("job_type") or "").lower()
+    return "picker" in job_type or category in {"picking", "particle_picking", "deep_picker"}
+
+
+def apply_autonomous_picker_preference(
+    candidates: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Keep manual picking as a fallback while an automated picker is usable.
+
+    This is a workflow-mode rule, not a fixed diameter or Blob Picker rule.
+    An automated picker remains selectable even when a tunable scientific
+    parameter needs an explicitly labelled heuristic estimate from the Model.
+    """
+    automated = [
+        candidate for candidate in candidates
+        if candidate.get("available", True) and is_automated_picker_candidate(candidate)
+    ]
+    if not automated:
+        return candidates, []
+    retained = []
+    blocked = []
+    for candidate in candidates:
+        if is_manual_picker_candidate(candidate):
+            blocked.append({
+                **candidate,
+                "available": False,
+                "blocked_by": list(candidate.get("blocked_by") or []) + [
+                    "Manual Picker is a fallback only while an automated particle picker is available. "
+                    "Use an explicitly labelled heuristic estimate for a tunable scientific parameter, "
+                    "or request input if no safe estimate is possible."
+                ],
+            })
+        else:
+            retained.append(candidate)
+    return retained, blocked
+
+
 
 def build_decision_guidance(
     dataset_info: Dict[str, Any] | None,
@@ -191,6 +243,23 @@ def build_decision_guidance(
                 "skipping Inspect Picks is not allowed in this run."
             ),
         }
+    automated_picker_available = any(
+        item.get("available") and is_automated_picker_candidate(item)
+        for item in candidate_list
+    )
+    automated_picker_guidance = None
+    if automated_picker_available:
+        automated_picker_guidance = {
+            "priority": "preferred",
+            "model_instruction": (
+                "For autonomous single-particle processing, prefer an available automated "
+                "particle picker. If a tunable scientific parameter is missing but can be "
+                "safely estimated from domain knowledge and current data, provide that estimate "
+                "and label it as estimated or assumed in reason/evidence. Do not select a Manual "
+                "Picker merely to avoid such an estimate; use Manual Picker only when automation "
+                "is unavailable, unsuitable, or explicitly requested by the user."
+            ),
+        }
     box_sweep_guidance = None
     if last_action == "extract_micrographs_multi" and any(
         item.get("available") and item.get("box_size_trial")
@@ -233,6 +302,7 @@ def build_decision_guidance(
         "must_continue_for_target": bool(target_unmet and refinement_available),
         "refinement_available": refinement_available,
         "inspect_picks": inspect_guidance,
+        "automated_picking": automated_picker_guidance,
         "extract_fallback": reextract_guidance,
         "box_size_sweep": box_sweep_guidance,
     }

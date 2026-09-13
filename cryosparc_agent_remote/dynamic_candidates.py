@@ -4,6 +4,7 @@ import os
 
 from cryosparc_client import cryosparc_client
 from job_specs import DEFAULT_GPU_LANE, get_job_spec
+from interactive_contracts import interactive_contract_for
 
 
 INTERACTIVE_EXECUTION_TOOL = "execute_interactive_cryosparc_job"
@@ -56,7 +57,11 @@ def build_registry_next_actions(
                     ],
                 })
             continue
-        actions.append(build_registry_candidate(current_node, registry_spec, required_inputs))
+        candidate = build_registry_candidate(current_node, registry_spec, required_inputs)
+        if candidate["available"]:
+            actions.append(candidate)
+        else:
+            blocked.append(candidate)
     return actions, blocked
 
 
@@ -266,6 +271,20 @@ def build_registry_candidate(
     tags = set(getattr(registry_spec, "tags", []) or [])
     requires_gpu = "gpuEnabled" in tags
     interactive = bool(getattr(registry_spec, "interactive", False))
+    interactive_contract = interactive_contract_for(job_type) if interactive else None
+    available = not interactive or bool(
+        interactive_contract and interactive_contract.get("autonomous")
+    )
+    blocked_by: list[str] = []
+    if interactive and interactive_contract is None:
+        blocked_by.append(
+            "No documented autonomous interactive contract is available for this job type."
+        )
+    elif interactive and not interactive_contract.get("autonomous"):
+        blocked_by.append(
+            interactive_contract.get("reason")
+            or "This interactive job requires state that autonomous execution cannot supply."
+        )
     default_lane = os.getenv("CRYOAGENT_GPU_LANE", DEFAULT_GPU_LANE) if requires_gpu else None
     parameter_template = registry_parameter_template(registry_spec)
     return {
@@ -282,8 +301,8 @@ def build_registry_candidate(
         # explicit so the executor never discovers it only after generic submit.
         "execution_mode": "interactive_mcp" if interactive else "create_job",
         "mcp_tool_name": INTERACTIVE_EXECUTION_TOOL if interactive else None,
-        "available": True,
-        "blocked_by": [],
+        "available": available,
+        "blocked_by": blocked_by,
         "required_inputs": required_inputs,
         "missing_required_inputs": [],
         "parameter_template": parameter_template,
@@ -292,6 +311,7 @@ def build_registry_candidate(
             for name, parameter in parameter_template.items()
             if "default" in parameter
         },
+        "interactive_contract": interactive_contract,
         "registry_source": "cryosparc_job_register",
         "job_spec_metadata": {
             "category": getattr(registry_spec, "category", None) or local_spec["category"],

@@ -16,6 +16,7 @@ from job_executor import execute_job_action, plan_job_action
 from job_specs import get_parameter_template
 from dynamic_candidates import build_registry_next_actions
 from workflow_policy import (
+    apply_autonomous_picker_preference,
     annotate_candidates,
     build_decision_guidance,
     infer_current_stage,
@@ -250,6 +251,8 @@ def generate_candidate_actions(
         apply_auto_select_2d_policy(action, workflow_state)
         for action in blocked
     ]
+    candidates, manual_picker_fallbacks = apply_autonomous_picker_preference(candidates)
+    blocked.extend(manual_picker_fallbacks)
     candidates, gated = apply_hard_workflow_gates(
         candidates, blocked, workflow_state, current_node
     )
@@ -534,6 +537,8 @@ def apply_auto_select_2d_policy(
     defaults["selected_templates"] = selected
     enriched["default_parameters"] = defaults
     enriched["execution_mode"] = "create_job"
+    enriched["mcp_tool_name"] = None
+    enriched["interactive_contract"] = None
     enriched["approval_required"] = False
     enriched["approval_reasons"] = []
     enriched["auto_policy"] = {
@@ -1479,7 +1484,9 @@ def validate_action_against_candidates(
             **action.parameters,
         }
         mcp_tool_name = candidate.get("mcp_tool_name")
-        if not execution_contract_is_available(execution_mode, mcp_tool_name):
+        if not execution_contract_is_available(
+            execution_mode, mcp_tool_name, action.job_type
+        ):
             issues.append(ValidationIssue(
                 code="execution_tool_unavailable",
                 message=(
@@ -1555,12 +1562,19 @@ def validate_action_against_candidates(
 def execution_contract_is_available(
     execution_mode: str,
     mcp_tool_name: str | None,
+    job_type: str | None = None,
 ) -> bool:
     """Validate the executor dispatch contract before live submission."""
     if execution_mode in {"create_job", "dry_run_only"}:
         return mcp_tool_name is None
     if execution_mode == "interactive_mcp":
-        return mcp_tool_name == "execute_interactive_cryosparc_job"
+        from interactive_contracts import autonomous_interactive_contract_available
+
+        return (
+            mcp_tool_name == "execute_interactive_cryosparc_job"
+            and bool(job_type)
+            and autonomous_interactive_contract_available(job_type)
+        )
     return False
 
 
