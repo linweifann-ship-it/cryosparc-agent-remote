@@ -7,12 +7,18 @@ MAX_HEURISTIC_ATTEMPTS = 2
 
 
 def missing_required_parameters(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return Registry-required parameters that lack a resolved default."""
+    """Return actionable scientific Registry requirements without defaults."""
     missing: list[dict[str, Any]] = []
     for action in actions:
+        if not action.get("available", True) or action.get("blocked_by"):
+            continue
         defaults = action.get("default_parameters") or {}
         for name, spec in (action.get("parameter_template") or {}).items():
-            if not spec.get("required") or defaults.get(name) is not None:
+            if (
+                not spec.get("required")
+                or defaults.get(name) is not None
+                or not is_heuristic_scientific_parameter(spec)
+            ):
                 continue
             missing.append(
                 {
@@ -29,6 +35,13 @@ def missing_required_parameters(actions: list[dict[str, Any]]) -> list[dict[str,
                 }
             )
     return missing
+
+
+def is_heuristic_scientific_parameter(spec: dict[str, Any]) -> bool:
+    """Avoid asking Model to guess paths, credentials, or executable locations."""
+    if spec.get("heuristic_allowed") is True:
+        return True
+    return spec.get("type") in {"number", "integer"}
 
 
 def recovery_feedback(
@@ -56,6 +69,40 @@ def recovery_feedback(
             "max_attempts_per_action_parameter": MAX_HEURISTIC_ATTEMPTS,
         },
     }
+
+
+def inject_model_parameter_recovery_guidance(
+    model_input: dict[str, Any],
+    candidate_context: dict[str, Any],
+    dataset_info: dict[str, Any],
+    attempts: dict[str, int],
+) -> dict[str, Any] | None:
+    """Attach first-decision guidance to the exact Model context contract."""
+    feedback = recovery_feedback(
+        candidate_context.get("candidate_actions") or [], dataset_info, attempts
+    )
+    if not feedback:
+        return None
+    guidance = {
+        "guidance_type": "missing_required_scientific_parameter_recovery",
+        "parameters": feedback["missing_required_parameters"],
+        "dataset_evidence": feedback["dataset_evidence"],
+        "policy": feedback["policy"],
+        "model_instruction": (
+            "For these required scientific parameters, you may provide a conservative "
+            "heuristic estimate from domain knowledge and current evidence. Explicitly "
+            "label it estimated or assumed in reason/evidence; do not invent observed facts. "
+            "Use request_input only if no reasonable safe estimate is possible."
+        ),
+    }
+    model_input["parameter_recovery_guidance"] = guidance
+    failure_context = model_input.get("failure_context")
+    if failure_context is None:
+        failure_context = {"has_failure": False}
+        model_input["failure_context"] = failure_context
+    failure_context["parameter_recovery_guidance"] = guidance
+    candidate_context["parameter_recovery_guidance"] = guidance
+    return feedback
 
 
 def attempt_keys_for_decision(

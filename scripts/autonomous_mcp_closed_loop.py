@@ -20,9 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from model_direct_runner import parse_model_decision_text, run_openai_compatible_model
 from inspect_picks_evidence import build_inspect_picks_observation
 from cryosparc_agent_remote.missing_parameter_recovery import (
-    MAX_HEURISTIC_ATTEMPTS,
     consume_request_input_retry,
-    recovery_feedback,
+    inject_model_parameter_recovery_guidance,
 )
 
 
@@ -283,14 +282,12 @@ async def main_async() -> None:
                     "current_node_id": current_node,
                 },
             )
-            parameter_feedback = recovery_feedback(
-                candidate_context.get("candidate_actions") or [],
+            parameter_feedback = inject_model_parameter_recovery_guidance(
+                model_input,
+                candidate_context,
                 dataset_info,
                 heuristic_attempts,
             )
-            if parameter_feedback:
-                model_input["missing_required_parameter_feedback"] = parameter_feedback
-                candidate_context["missing_required_parameter_feedback"] = parameter_feedback
             round_log["model_input"] = model_input
             round_log["candidate_context"] = candidate_context
             write_json(round_dir / "model_input.json", model_input, round_log)
