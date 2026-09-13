@@ -1,4 +1,5 @@
 # Runs local or OpenAI-compatible models and converts text output into V2 decisions.
+import copy
 import json
 import os
 import re
@@ -204,7 +205,7 @@ def run_openai_compatible_model(
 
     payload = {
         "model": model_name,
-        "messages": messages,
+        "messages": copy.deepcopy(messages),
         "temperature": temperature,
         "max_tokens": max_new_tokens,
     }
@@ -217,10 +218,11 @@ def run_openai_compatible_model(
     if tool_choice:
         payload["tool_choice"] = tool_choice
     endpoint = api_base.rstrip("/") + "/chat/completions"
+    cache_requested = payload_has_prompt_cache_hints(payload)
     cache_compatibility = {
-        "requested": bool(prompt_cache_key or prompt_cache_options),
+        "requested": cache_requested,
         "fallback_used": False,
-        "status": "requested" if (prompt_cache_key or prompt_cache_options) else "not_requested",
+        "status": "requested" if cache_requested else "not_requested",
     }
     retryable_http_codes = {408, 429, 500, 502, 503, 504}
     attempts = 0
@@ -241,11 +243,9 @@ def run_openai_compatible_model(
             if (
                 cache_compatibility["requested"]
                 and not cache_compatibility["fallback_used"]
-                and exc.code in {400, 422}
-                and "prompt_cache" in error_body.lower()
+                and is_prompt_cache_unsupported_error(error_body)
             ):
-                payload.pop("prompt_cache_key", None)
-                payload.pop("prompt_cache_options", None)
+                strip_prompt_cache_hints(payload)
                 cache_compatibility.update({"fallback_used": True, "status": "provider_rejected_cache_parameters", "error": error_body})
                 continue
             if exc.code not in retryable_http_codes or attempts > max_retries:
@@ -287,6 +287,45 @@ def run_openai_compatible_model(
         "cached_tokens": cached_tokens,
         "cache_compatibility": cache_compatibility,
     }
+
+
+def is_prompt_cache_unsupported_error(error_body: str) -> bool:
+    """Recognize bounded cache-compatibility fallbacks from API error text."""
+    normalized = error_body.lower()
+    return "prompt_cache" in normalized and (
+        "unsupported" in normalized
+        or "not supported" in normalized
+        or "unknown" in normalized
+    )
+
+
+def strip_prompt_cache_hints(payload: Dict[str, Any]) -> None:
+    """Remove all provider-specific cache hints in-place before the one retry."""
+    payload.pop("prompt_cache_key", None)
+    payload.pop("prompt_cache_options", None)
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict):
+                item.pop("prompt_cache_breakpoint", None)
+
+
+def payload_has_prompt_cache_hints(payload: Dict[str, Any]) -> bool:
+    if payload.get("prompt_cache_key") or payload.get("prompt_cache_options"):
+        return True
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        if any(
+            isinstance(item, dict) and "prompt_cache_breakpoint" in item
+            for item in message["content"]
+        ):
+            return True
+    return False
 
 
 def resolve_api_key(

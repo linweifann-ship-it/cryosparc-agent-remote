@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-model", default="gpt-5.6-luna")
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
-    parser.add_argument("--api-prompt-cache-mode", choices=["explicit", "implicit", "disabled"], default="explicit")
+    parser.add_argument("--api-prompt-cache-mode", choices=["explicit", "implicit", "disabled"], default="disabled")
     parser.add_argument("--api-prompt-cache-key")
     parser.add_argument("--api-prompt-cache-ttl", default="30m")
     parser.add_argument("--model-python", default=DEFAULT_MODEL_PYTHON)
@@ -304,7 +304,7 @@ async def main_async() -> None:
                 candidate_context=candidate_context,
                 round_index=round_index,
                 visual_context=visual_context,
-                mark_static_cache_breakpoint=args.backend == "api" and args.api_prompt_cache_mode == "explicit",
+                mark_static_cache_breakpoint=args.backend == "api" and api_explicit_cache_enabled(args),
                 kb_tool_policy=args.kb_tool_policy,
             )
             messages_file = round_dir / "model_messages.json"
@@ -711,7 +711,7 @@ def build_autonomous_prompt(
 
 
 def resolve_prompt_cache_key(args: argparse.Namespace) -> str | None:
-    if args.api_prompt_cache_mode != "explicit":
+    if not api_explicit_cache_enabled(args):
         return None
     if args.api_prompt_cache_key:
         return args.api_prompt_cache_key
@@ -719,9 +719,23 @@ def resolve_prompt_cache_key(args: argparse.Namespace) -> str | None:
 
 
 def build_prompt_cache_options(args: argparse.Namespace) -> dict[str, Any] | None:
-    if args.api_prompt_cache_mode != "explicit":
+    if not api_explicit_cache_enabled(args):
         return None
     return {"mode": "explicit", "ttl": args.api_prompt_cache_ttl}
+
+
+def api_explicit_cache_enabled(args: argparse.Namespace) -> bool:
+    """Enable provider-specific cache hints only after an explicit opt-in.
+
+    The Ofox route currently rejects these non-standard fields for GPT-5.6-sol,
+    so keep them off even when a stale launcher requested explicit caching.
+    """
+    if args.api_prompt_cache_mode != "explicit":
+        return False
+    return not (
+        args.api_base.rstrip("/").lower() == "https://api.ofox.io/v1"
+        and args.api_model == "openai/gpt-5.6-sol"
+    )
 
 
 def visual_context_has_data_url(visual_context: dict[str, Any]) -> bool:

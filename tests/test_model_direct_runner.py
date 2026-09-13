@@ -101,16 +101,50 @@ class ModelDirectRunnerTests(unittest.TestCase):
         response.__enter__ = mock.Mock(return_value=response)
         response.__exit__ = mock.Mock(return_value=False)
         response.read.return_value = b'{"choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":3}}'
-        rejected = HTTPError("https://example.test", 400, "bad request", {}, io.BytesIO(b'{"error":"unknown prompt_cache_options"}'))
+        rejected = HTTPError("https://example.test", 500, "server error", {}, io.BytesIO(b'{"error":"prompt_cache_breakpoint is not supported on this model"}'))
+        messages = [{"role": "system", "content": [{"type": "text", "text": "stable", "prompt_cache_breakpoint": {"mode": "explicit"}}]}]
         with mock.patch("model_direct_runner.request.urlopen", side_effect=[rejected, response]) as urlopen:
             result = run_openai_compatible_model(
-                [{"role": "user", "content": "test"}], "https://example.test/v1", "key", "model",
+                messages, "https://example.test/v1", "key", "model",
                 prompt_cache_key="workflow", prompt_cache_options={"mode": "explicit"},
             )
         retry_payload = json.loads(urlopen.call_args_list[-1].args[0].data.decode())
         self.assertNotIn("prompt_cache_key", retry_payload)
+        self.assertNotIn("prompt_cache_options", retry_payload)
+        self.assertNotIn("prompt_cache_breakpoint", retry_payload["messages"][0]["content"][0])
+        self.assertEqual(urlopen.call_count, 2)
         self.assertTrue(result["cache_compatibility"]["fallback_used"])
         self.assertIsNone(result["cached_tokens"])
+
+    def test_default_api_request_has_no_cache_hints(self):
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = b'{"choices":[{"message":{"content":"OK"}}]}'
+        with mock.patch("model_direct_runner.request.urlopen", return_value=response) as urlopen:
+            run_openai_compatible_model(
+                [{"role": "user", "content": "test"}], "https://example.test/v1", "key", "model"
+            )
+        request_payload = json.loads(urlopen.call_args.args[0].data.decode())
+        self.assertNotIn("prompt_cache_key", request_payload)
+        self.assertNotIn("prompt_cache_options", request_payload)
+        self.assertNotIn("prompt_cache_breakpoint", json.dumps(request_payload))
+
+    def test_explicit_supported_request_preserves_cache_hints(self):
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = b'{"choices":[{"message":{"content":"OK"}}]}'
+        messages = [{"role": "system", "content": [{"type": "text", "text": "stable", "prompt_cache_breakpoint": {"mode": "explicit"}}]}]
+        with mock.patch("model_direct_runner.request.urlopen", return_value=response) as urlopen:
+            run_openai_compatible_model(
+                messages, "https://supported.example/v1", "key", "model",
+                prompt_cache_key="workflow", prompt_cache_options={"mode": "explicit"},
+            )
+        request_payload = json.loads(urlopen.call_args.args[0].data.decode())
+        self.assertEqual(request_payload["prompt_cache_key"], "workflow")
+        self.assertEqual(request_payload["prompt_cache_options"]["mode"], "explicit")
+        self.assertEqual(request_payload["messages"][0]["content"][0]["prompt_cache_breakpoint"]["mode"], "explicit")
 
 
 if __name__ == "__main__":

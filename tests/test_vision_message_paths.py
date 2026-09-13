@@ -1,9 +1,16 @@
+import json
 import os
 import tempfile
 import unittest
 from unittest import mock
 
-from autonomous_mcp_closed_loop import build_autonomous_prompt
+from autonomous_mcp_closed_loop import (
+    api_explicit_cache_enabled,
+    build_autonomous_prompt,
+    build_prompt_cache_options,
+    parse_args,
+    resolve_prompt_cache_key,
+)
 from vision_inputs import (
     build_class_average_visual_context,
     build_pick_inspection_visual_context,
@@ -64,6 +71,37 @@ class _FakePickJob:
 
 
 class VisionMessagePathTests(unittest.TestCase):
+    def test_generic_api_default_does_not_enable_explicit_cache(self):
+        with mock.patch("sys.argv", ["runner", "--project", "P2", "--workspace", "W34"]):
+            args = parse_args()
+        self.assertEqual(args.api_prompt_cache_mode, "disabled")
+        self.assertFalse(api_explicit_cache_enabled(args))
+        self.assertIsNone(resolve_prompt_cache_key(args))
+        self.assertIsNone(build_prompt_cache_options(args))
+
+    def test_ofox_gpt56_sol_does_not_enable_explicit_cache(self):
+        with mock.patch("sys.argv", [
+            "runner", "--project", "P2", "--workspace", "W34",
+            "--api-base", "https://api.ofox.io/v1", "--api-model", "openai/gpt-5.6-sol",
+            "--api-prompt-cache-mode", "explicit",
+        ]):
+            args = parse_args()
+        self.assertFalse(api_explicit_cache_enabled(args))
+        self.assertIsNone(resolve_prompt_cache_key(args))
+        self.assertIsNone(build_prompt_cache_options(args))
+        messages = build_autonomous_prompt({}, {}, 0, mark_static_cache_breakpoint=api_explicit_cache_enabled(args))
+        self.assertNotIn("prompt_cache_breakpoint", json.dumps(messages))
+
+    def test_explicit_cache_remains_available_for_supported_provider(self):
+        with mock.patch("sys.argv", [
+            "runner", "--project", "P2", "--workspace", "W34",
+            "--api-base", "https://supported.example/v1", "--api-model", "model",
+            "--api-prompt-cache-mode", "explicit",
+        ]):
+            args = parse_args()
+        self.assertTrue(api_explicit_cache_enabled(args))
+        self.assertEqual(resolve_prompt_cache_key(args), "cryoagent:P2:W34:workflow-v2")
+        self.assertEqual(build_prompt_cache_options(args)["mode"], "explicit")
     def test_class_average_context_encodes_class_ids_as_data_url(self):
         with tempfile.TemporaryDirectory() as cache_dir:
             with mock.patch("vision_inputs.cryosparc_client", return_value=_FakeClient(_FakeClassJob())):
