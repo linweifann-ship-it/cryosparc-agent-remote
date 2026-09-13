@@ -1,5 +1,6 @@
 # Fixed tests for adapting V2 model decisions into internal execution plans.
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from v2_decision_adapter import (
@@ -340,6 +341,168 @@ class V2DecisionAdapterTests(unittest.TestCase):
             path="parameters",
         )
         self.assertTrue(any(item.code == "parameter_type_mismatch" for item in issues))
+
+    def test_registry_patch_ctf_empty_model_parameters_follow_runtime_validation_path(self):
+        """Exercise candidate -> V2 adapter -> validator -> resolved parameters."""
+        candidates = [{
+            "action_id": "registry_J312_patch_ctf_estimation_multi",
+            "action_type": "forward",
+            "workflow_node_id": "J312:patch_ctf_estimation_multi",
+            "reference_job_uid": "J312",
+            "job_type": "patch_ctf_estimation_multi",
+            "execution_mode": "create_job",
+            "available": True,
+            "parameter_template": {
+                "classic_mode": {"type": "boolean", "default": False},
+                "do_phase_shift_refine_only": {"type": "boolean", "default": False},
+                "compute_num_gpus": {"type": "integer", "default": 1},
+            },
+            "default_parameters": {
+                "classic_mode": False,
+                "do_phase_shift_refine_only": False,
+                "compute_num_gpus": 1,
+            },
+        }]
+        decision = {
+            "schema_version": "2.0",
+            "decision_type": "forward",
+            "action": "patch_ctf_estimation_multi",
+            "parameters": {},
+        }
+        adapted = adapt_v2_decision_to_internal(decision, candidates)
+        self.assertTrue(adapted["success"])
+        self.assertEqual(adapted["internal_decision"]["selected_actions"][0]["parameters"], {})
+        validation = validate_model_decision_payload(
+            adapted["internal_decision"], candidate_actions=candidates
+        )
+        self.assertTrue(validation["success"])
+        resolved = validation["resolved_actions"][0]["resolved_parameters"]
+        self.assertIs(resolved["classic_mode"], False)
+        self.assertIs(resolved["do_phase_shift_refine_only"], False)
+        self.assertNotIn("do_plots", resolved)
+
+    def test_live_registry_style_patch_ctf_candidate_runs_full_adapter_path(self):
+        from dynamic_candidates import build_registry_candidate
+
+        spec = SimpleNamespace(
+            type="patch_ctf_estimation_multi",
+            title="Patch CTF",
+            category="ctf_estimation",
+            tags=["gpuEnabled"],
+            interactive=False,
+            params={
+                "classic_mode": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=0, hidden=False, enum=None, ge=None, le=None),
+                "do_phase_shift_refine_only": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=0, hidden=False, enum=None, ge=None, le=None),
+                "do_plots": SimpleNamespace(type="integer", anyOf=[], required_param=False, default=1, hidden=True, enum=None, ge=None, le=None),
+            },
+        )
+        candidate = build_registry_candidate(
+            {"cryosparc_job_uid": "J312", "workflow_node_id": "J312"},
+            spec,
+            {"exposures": [{"source_job_uid": "J312", "source_output": "imported_micrographs"}]},
+        )
+        adapted = adapt_v2_decision_to_internal(
+            {"decision_type": "forward", "action": "patch_ctf_estimation_multi", "parameters": {}},
+            [candidate],
+        )
+        validation = validate_model_decision_payload(
+            adapted["internal_decision"], candidate_actions=[candidate]
+        )
+        self.assertTrue(validation["success"])
+        resolved = validation["resolved_actions"][0]["resolved_parameters"]
+        self.assertIs(resolved["classic_mode"], False)
+        self.assertIs(resolved["do_phase_shift_refine_only"], False)
+        self.assertNotIn("do_plots", candidate["default_parameters"])
+        self.assertNotIn("do_plots", resolved)
+
+    def test_inspect_picks_empty_model_parameters_validate_with_boolean_defaults(self):
+        candidates = [{
+            "action_id": "registry_J314_inspect_picks_v2",
+            "action_type": "forward",
+            "workflow_node_id": "J314:inspect_picks_v2",
+            "reference_job_uid": "J314",
+            "job_type": "inspect_picks_v2",
+            "execution_mode": "create_job",
+            "available": True,
+            "parameter_template": {
+                "calibrate_ncc": {"type": "boolean", "default": True},
+                "calibrate_pow": {"type": "boolean", "default": True},
+                "do_auto_cluster": {"type": "boolean", "default": False},
+            },
+            "default_parameters": {
+                "calibrate_ncc": True,
+                "calibrate_pow": True,
+                "do_auto_cluster": False,
+            },
+        }]
+        adapted = adapt_v2_decision_to_internal(
+            {"decision_type": "forward", "action": "inspect_picks_v2", "parameters": {}},
+            candidates,
+        )
+        validation = validate_model_decision_payload(
+            adapted["internal_decision"], candidate_actions=candidates
+        )
+        self.assertTrue(validation["success"])
+        resolved = validation["resolved_actions"][0]["resolved_parameters"]
+        self.assertIs(resolved["calibrate_ncc"], True)
+        self.assertIs(resolved["calibrate_pow"], True)
+        self.assertIs(resolved["do_auto_cluster"], False)
+        self.assertNotIn("dilation_bins", resolved)
+        self.assertNotIn("keep_threshold", resolved)
+
+    def test_valid_request_input_is_terminal_control_flow_without_action(self):
+        decision = {
+            "schema_version": "2.0",
+            "decision_type": "request_input",
+            "requested_inputs": ["pick-inspection overlay or NCC/power score distribution"],
+            "reason": "Visual evidence is unavailable, so safe thresholds cannot be chosen.",
+            "confidence": 0.95,
+            "risk_flags": ["missing_visual_evidence"],
+            "evidence": ["The visual tool returned no image payload."],
+        }
+        adapted = adapt_v2_decision_to_internal(decision, candidate_actions())
+        self.assertTrue(adapted["success"])
+        internal = adapted["internal_decision"]
+        self.assertEqual(internal["selected_actions"], [])
+        validation = validate_model_decision_payload(
+            internal, candidate_actions=candidate_actions()
+        )
+        self.assertTrue(validation["success"])
+        self.assertEqual(validation["decision_type"], "request_input")
+        from action_registry import execute_model_decision_payload
+        execution = execute_model_decision_payload(
+            internal,
+            candidate_actions=candidate_actions(),
+            dry_run=False,
+            project_uid="P2",
+            workspace_uid="W39",
+        )
+        self.assertTrue(execution["success"])
+        self.assertEqual(execution["execution_mode"], "awaiting_input")
+        self.assertEqual(execution["execution_results"], [])
+
+    def test_stop_and_rollback_remain_non_action_control_flow(self):
+        stop = adapt_v2_decision_to_internal(
+            {"decision_type": "stop", "reason": "Done", "confidence": 0.8},
+            candidate_actions(),
+        )
+        rollback = adapt_v2_decision_to_internal(
+            {
+                "decision_type": "rollback",
+                "rollback_target": {
+                    "workflow_node_id": "J8",
+                    "job_type": "class_2D_new",
+                    "reason_code": "quality_regression",
+                },
+                "reason": "Restore a prior node.",
+                "confidence": 0.8,
+            },
+            candidate_actions(),
+        )
+        self.assertEqual(stop["internal_decision"]["selected_actions"], [])
+        self.assertEqual(rollback["internal_decision"]["selected_actions"], [])
+        self.assertTrue(validate_model_decision_payload(stop["internal_decision"])["success"])
+        self.assertTrue(validate_model_decision_payload(rollback["internal_decision"])["success"])
 
 
 if __name__ == "__main__":

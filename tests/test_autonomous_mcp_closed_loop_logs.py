@@ -1,13 +1,15 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
-def load_runner_module():
+def load_runner_module(module_name, relative_path):
     if "mcp" not in sys.modules:
         mcp = types.ModuleType("mcp")
         mcp.ClientSession = object
@@ -20,13 +22,9 @@ def load_runner_module():
         stdio.stdio_client = object
         sys.modules["mcp.client.stdio"] = stdio
 
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "autonomous_mcp_closed_loop.py"
-    )
+    module_path = Path(__file__).resolve().parents[1] / relative_path
     spec = importlib.util.spec_from_file_location(
-        "autonomous_mcp_closed_loop_for_log_tests",
+        module_name,
         module_path,
     )
     module = importlib.util.module_from_spec(spec)
@@ -38,7 +36,14 @@ def load_runner_module():
 class LocalJobLogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.runner = load_runner_module()
+        cls.runner = load_runner_module(
+            "autonomous_mcp_closed_loop_for_log_tests",
+            "scripts/autonomous_mcp_closed_loop.py",
+        )
+        cls.runtime = load_runner_module(
+            "autonomous_mcp_closed_loop_for_runtime_tests",
+            "cryosparc_agent_remote/autonomous_mcp_closed_loop.py",
+        )
 
     def test_rejects_reused_job_uid_from_foreign_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -256,6 +261,64 @@ class LocalJobLogTests(unittest.TestCase):
         )
         self.assertNotIn("retry_guidance", context)
         self.assertNotIn("error_type", context["execution_error"])
+
+    def test_validation_failure_limit_checkpoint_records_final_round(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = types.SimpleNamespace(project="P2", workspace="W39")
+            self.runtime.write_checkpoint(
+                Path(tmpdir),
+                args,
+                status="validation_failure_limit",
+                round_index=7,
+                current_node="J314",
+                validation_failures=3,
+                terminal=True,
+            )
+            checkpoint = json.loads((Path(tmpdir) / "checkpoint.json").read_text())
+
+        self.assertEqual(checkpoint["round"], 7)
+        self.assertEqual(checkpoint["status"], "validation_failure_limit")
+        self.assertEqual(checkpoint["validation_failures"], 3)
+        self.assertTrue(checkpoint["terminal"])
+
+    def test_request_input_checkpoint_is_terminal_without_pending_jobs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = types.SimpleNamespace(project="P2", workspace="W39")
+            self.runtime.write_checkpoint(
+                Path(tmpdir),
+                args,
+                status="model_request_input",
+                round_index=6,
+                current_node="J314",
+                validation_failures=0,
+                terminal=True,
+            )
+            checkpoint = json.loads((Path(tmpdir) / "checkpoint.json").read_text())
+
+        self.assertEqual(checkpoint["pending_jobs"], [])
+        self.assertEqual(checkpoint["validation_failures"], 0)
+        self.assertTrue(checkpoint["terminal"])
+
+    def test_runtime_runner_uses_checkout_mcp_server_and_request_input_contract(self):
+        self.assertTrue(
+            (Path(self.runtime.DEFAULT_PROJECT_DIR) / self.runtime.DEFAULT_MCP_SERVER).is_file()
+        )
+        self.assertIn(
+            "requested_inputs",
+            self.runtime.STATIC_DECISION_INSTRUCTIONS["output_contract"],
+        )
+        request_input_example = next(
+            example
+            for example in self.runtime.STATIC_DECISION_INSTRUCTIONS["valid_examples"]
+            if example["decision_type"] == "request_input"
+        )
+        self.assertTrue(request_input_example["requested_inputs"])
+
+    def test_runtime_server_env_places_vision_artifacts_under_run_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {}, clear=True):
+                env = self.runtime.build_server_env(Path(tmpdir))
+        self.assertEqual(env["CRYOAGENT_VISION_CACHE_DIR"], str(Path(tmpdir) / "vision_artifacts"))
 
 
 if __name__ == "__main__":

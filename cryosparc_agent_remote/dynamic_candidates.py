@@ -205,7 +205,7 @@ def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]
     """Expose Registry types, defaults, enums, and numeric constraints."""
     template = {}
     for name, param in getattr(registry_spec, "params", {}).items():
-        if getattr(param, "hidden", False) and registry_spec.type != "inspect_picks_v2":
+        if getattr(param, "hidden", False):
             continue
         value_type = registry_param_type(param)
         item = {"type": value_type}

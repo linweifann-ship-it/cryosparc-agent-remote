@@ -28,8 +28,10 @@ DEFAULT_BASE_MODEL = "/ssd1/lisongyang/models/Qwen3.6-27B-ms-test"
 DEFAULT_ADAPTER = "/ssd1/lisongyang/outputs/cryoagent-fsdp-lora-h20-v2-no-workflow"
 DEFAULT_MODEL_PYTHON = "/ssd1/linweifan/miniforge3/envs/cryoagent-model/bin/python"
 DEFAULT_SERVER_PYTHON = "/ssd1/linweifan/miniforge3/envs/cryosparc-agent/bin/python"
-DEFAULT_PROJECT_DIR = "/ssd1/linweifan/cryosparc_agent"
-DEFAULT_MCP_SERVER = "cryosparc_mcp_server.py"
+# Run the MCP server from this checkout by default, so loop and server share
+# one revision.  A caller can still deliberately supply an external server.
+DEFAULT_PROJECT_DIR = str(Path(__file__).resolve().parents[1])
+DEFAULT_MCP_SERVER = "cryosparc_agent_remote/cryosparc_mcp_server.py"
 
 SYSTEM_PROMPT = (
     "You are the only decision maker for an autonomous CryoSPARC workflow test. "
@@ -57,6 +59,10 @@ STATIC_DECISION_INSTRUCTIONS = {
         "action": "CryoSPARC job type for forward/branch decisions.",
         "job_type": "Same as action when using compact format.",
         "parameters": "Only non-default parameters explicitly chosen by the model.",
+        "requested_inputs": (
+            "Required only for request_input: a non-empty list of specific external "
+            "facts or artifacts needed before the workflow can safely continue."
+        ),
         "connections": {
             "input_name": {
                 "source_job_uid": "CryoSPARC source job, chosen by the model",
@@ -91,6 +97,15 @@ STATIC_DECISION_INSTRUCTIONS = {
             "confidence": 0.9,
             "risk_flags": [],
             "evidence": ["Visual comparison identifies the best completed branch."],
+        },
+        {
+            "schema_version": "2.0",
+            "decision_type": "request_input",
+            "requested_inputs": ["pick-inspection overlay or NCC/power score distribution"],
+            "reason": "The missing visual evidence prevents a safe pick-selection decision.",
+            "confidence": 0.9,
+            "risk_flags": ["missing_visual_evidence"],
+            "evidence": [],
         },
     ],
 }
@@ -165,11 +180,10 @@ async def main_async() -> None:
         "rounds": [],
         "stop_reason": None,
         "success": False,
+        "code_revision": current_git_revision(Path(__file__).resolve().parents[1]),
     }
 
-    server_env = os.environ.copy()
-    if os.getenv("CRYOAGENT_GPU_LANE"):
-        server_env["CRYOAGENT_GPU_LANE"] = os.environ["CRYOAGENT_GPU_LANE"]
+    server_env = build_server_env(run_dir)
     server_params = StdioServerParameters(
         command=args.server_python,
         args=[str(Path(args.project_dir) / args.mcp_server)],
@@ -188,6 +202,7 @@ async def main_async() -> None:
     summary["checkpoint_file"] = str(run_dir / "checkpoint.json")
     feedback_to_model: dict[str, Any] | None = None
     validation_failures = 0
+    last_round_index = 0
 
     model_worker = None
     if args.backend == "local":
@@ -211,6 +226,7 @@ async def main_async() -> None:
         await session.initialize()
 
         for round_index in range(1, args.max_rounds + 1):
+            last_round_index = round_index
             round_dir = run_dir / f"round_{round_index:02d}"
             round_dir.mkdir(parents=True, exist_ok=True)
             round_log: dict[str, Any] = {
@@ -382,6 +398,11 @@ async def main_async() -> None:
                 summary["stop_reason"] = "model_call_error"
                 summary["error"] = error_payload
                 summary["finished_at"] = utc_now()
+                write_checkpoint(
+                    run_dir, args, status="model_call_error", round_index=round_index,
+                    current_node=current_node, validation_failures=validation_failures,
+                    terminal=True,
+                )
                 write_json(run_dir / "summary.json", summary, None)
                 print_run_summary(summary, run_dir)
                 return
@@ -419,11 +440,26 @@ async def main_async() -> None:
                 )
                 if validation_failures >= args.max_validation_failures:
                     summary["stop_reason"] = "validation_failure_limit"
+                    write_checkpoint(
+                        run_dir, args, status="validation_failure_limit", round_index=round_index,
+                        current_node=current_node, validation_failures=validation_failures,
+                        terminal=True,
+                    )
                     break
+                write_checkpoint(
+                    run_dir, args, status="validation_retry", round_index=round_index,
+                    current_node=current_node, validation_failures=validation_failures,
+                    next_round=round_index + 1,
+                )
                 continue
 
             decision_file = round_dir / "model_decision.json"
             write_json(decision_file, decision, round_log)
+            write_checkpoint(
+                run_dir, args, status="model_decision_generated", round_index=round_index,
+                current_node=current_node, validation_failures=validation_failures,
+                next_round=round_index,
+            )
 
             validation_args = {
                 "decision": decision,
@@ -456,7 +492,17 @@ async def main_async() -> None:
                 )
                 if validation_failures >= args.max_validation_failures:
                     summary["stop_reason"] = "validation_failure_limit"
+                    write_checkpoint(
+                        run_dir, args, status="validation_failure_limit", round_index=round_index,
+                        current_node=current_node, validation_failures=validation_failures,
+                        terminal=True,
+                    )
                     break
+                write_checkpoint(
+                    run_dir, args, status="validation_retry", round_index=round_index,
+                    current_node=current_node, validation_failures=validation_failures,
+                    next_round=round_index + 1,
+                )
                 continue
 
             validation_failures = 0
@@ -464,6 +510,11 @@ async def main_async() -> None:
             if decision_type in {"stop", "complete", "request_input"}:
                 summary["stop_reason"] = f"model_{decision_type}"
                 round_log["next_round_reason"] = decision.get("reason")
+                write_checkpoint(
+                    run_dir, args, status=summary["stop_reason"], round_index=round_index,
+                    current_node=current_node, validation_failures=validation_failures,
+                    terminal=True,
+                )
                 break
 
             execution_args = {
@@ -488,20 +539,12 @@ async def main_async() -> None:
 
             created_jobs = find_created_jobs(execution)
             round_log["created_jobs"] = created_jobs
-            write_json(
-                run_dir / "checkpoint.json",
-                {
-                    "schema_version": "1.0",
-                    "status": "waiting_for_jobs" if created_jobs else "execution_failed",
-                    "updated_at": utc_now(),
-                    "project_uid": args.project,
-                    "workspace_uid": args.workspace,
-                    "round": round_index,
-                    "current_node": current_node,
-                    "pending_jobs": created_jobs,
-                    "next_round": round_index + 1,
-                },
-                None,
+            write_checkpoint(
+                run_dir, args,
+                status="waiting_for_jobs" if created_jobs else "execution_failed",
+                round_index=round_index, current_node=current_node,
+                pending_jobs=created_jobs, validation_failures=validation_failures,
+                next_round=round_index + 1,
             )
             if not created_jobs:
                 feedback_to_model = make_feedback(
@@ -557,6 +600,12 @@ async def main_async() -> None:
                     candidate_context,
                     failed_decision=decision,
                 )
+                write_checkpoint(
+                    run_dir, args, status="job_wait_timeout_or_not_terminal",
+                    round_index=round_index, current_node=current_node,
+                    pending_jobs=created_jobs, validation_failures=validation_failures,
+                    terminal=True,
+                )
                 break
 
             last_job = terminal_jobs[-1]
@@ -574,20 +623,10 @@ async def main_async() -> None:
                 last_job["cryosift_observation"] = cryosift_observation
                 round_log["cryosift_observation"] = cryosift_observation
             current_node = last_job.get("job_uid") or current_node
-            write_json(
-                run_dir / "checkpoint.json",
-                {
-                    "schema_version": "1.0",
-                    "status": "ready_for_next_decision",
-                    "updated_at": utc_now(),
-                    "project_uid": args.project,
-                    "workspace_uid": args.workspace,
-                    "round": round_index,
-                    "current_node": current_node,
-                    "pending_jobs": [],
-                    "next_round": round_index + 1,
-                },
-                None,
+            write_checkpoint(
+                run_dir, args, status="ready_for_next_decision", round_index=round_index,
+                current_node=current_node, validation_failures=validation_failures,
+                next_round=round_index + 1,
             )
             feedback_to_model = make_feedback(
                 round_index,
@@ -606,6 +645,11 @@ async def main_async() -> None:
 
     summary["finished_at"] = utc_now()
     summary["success"] = summary["stop_reason"] in {"model_stop", "model_complete", "model_request_input", "max_rounds_reached"}
+    write_checkpoint(
+        run_dir, args, status=summary["stop_reason"] or "max_rounds_reached",
+        round_index=last_round_index, current_node=current_node,
+        validation_failures=validation_failures, terminal=True,
+    )
     write_json(run_dir / "summary.json", summary, None)
     print_run_summary(summary, run_dir)
 
@@ -1141,10 +1185,63 @@ def make_run_dir(output_dir: Path) -> Path:
     return run_dir
 
 
+def build_server_env(run_dir: Path) -> dict[str, str]:
+    """Give each loop a writable, auditable location for Vision artifacts."""
+    server_env = os.environ.copy()
+    server_env.setdefault("CRYOAGENT_VISION_CACHE_DIR", str(run_dir / "vision_artifacts"))
+    if os.getenv("CRYOAGENT_GPU_LANE"):
+        server_env["CRYOAGENT_GPU_LANE"] = os.environ["CRYOAGENT_GPU_LANE"]
+    return server_env
+
+
+def current_git_revision(repo_dir: Path) -> str | None:
+    """Record the checked-out source revision used for this run."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def write_json(path: Path, payload: Any, round_log: dict[str, Any] | None) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
     if round_log is not None:
         round_log.setdefault("files", {})[path.name] = str(path)
+
+
+def write_checkpoint(
+    run_dir: Path,
+    args: argparse.Namespace,
+    *,
+    status: str,
+    round_index: int,
+    current_node: str | None,
+    validation_failures: int,
+    pending_jobs: list[dict[str, Any]] | None = None,
+    next_round: int | None = None,
+    terminal: bool = False,
+) -> None:
+    """Persist loop observability state without changing decision policy."""
+    write_json(
+        run_dir / "checkpoint.json",
+        {
+            "schema_version": "1.0",
+            "status": status,
+            "updated_at": utc_now(),
+            "project_uid": args.project,
+            "workspace_uid": args.workspace,
+            "round": round_index,
+            "current_node": current_node,
+            "pending_jobs": pending_jobs or [],
+            "next_round": next_round,
+            "validation_failures": validation_failures,
+            "terminal": terminal,
+        },
+        None,
+    )
 
 
 def utc_now() -> str:

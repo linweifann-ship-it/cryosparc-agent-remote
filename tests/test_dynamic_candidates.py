@@ -70,6 +70,33 @@ class DynamicCandidateTests(unittest.TestCase):
         self.assertNotIn("do_plots", candidate["parameter_template"])
         self.assertNotIn("do_plots", candidate["default_parameters"])
 
+    def test_inspect_picks_defaults_are_boolean_and_hidden_fields_stay_hidden(self):
+        spec = SimpleNamespace(
+            type="inspect_picks_v2",
+            title="Inspect Picks",
+            category="particle_picking",
+            tags=["interactive"],
+            interactive=True,
+            params={
+                "calibrate_ncc": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=1, hidden=False, enum=None, ge=None, le=None),
+                "calibrate_pow": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=1, hidden=False, enum=None, ge=None, le=None),
+                "do_auto_cluster": SimpleNamespace(type="boolean", anyOf=[], required_param=False, default=0, hidden=False, enum=None, ge=None, le=None),
+                "dilation_bins": SimpleNamespace(type="integer", anyOf=[], required_param=False, default=4, hidden=True, enum=None, ge=None, le=None),
+                "keep_threshold": SimpleNamespace(type="number", anyOf=[], required_param=False, default=0.8, hidden=True, enum=None, ge=None, le=None),
+            },
+        )
+        candidate = build_registry_candidate(
+            {"cryosparc_job_uid": "J1", "workflow_node_id": "J1"}, spec, {"particles": []}
+        )
+        defaults = candidate["default_parameters"]
+        self.assertIs(defaults["calibrate_ncc"], True)
+        self.assertIs(defaults["calibrate_pow"], True)
+        self.assertIs(defaults["do_auto_cluster"], False)
+        self.assertNotIn("dilation_bins", defaults)
+        self.assertNotIn("keep_threshold", defaults)
+        self.assertNotIn("dilation_bins", candidate["parameter_template"])
+        self.assertNotIn("keep_threshold", candidate["parameter_template"])
+
     def test_optional_registry_slots_do_not_block_particle_input(self):
         spec = SimpleNamespace(
             inputs=SimpleNamespace(root={
