@@ -644,7 +644,7 @@ async def main_async() -> None:
             summary["stop_reason"] = "max_rounds_reached"
 
     summary["finished_at"] = utc_now()
-    summary["success"] = summary["stop_reason"] in {"model_stop", "model_complete", "model_request_input", "max_rounds_reached"}
+    summary["success"] = is_successful_terminal_stop(summary["stop_reason"])
     write_checkpoint(
         run_dir, args, status=summary["stop_reason"] or "max_rounds_reached",
         round_index=last_round_index, current_node=current_node,
@@ -652,6 +652,11 @@ async def main_async() -> None:
     )
     write_json(run_dir / "summary.json", summary, None)
     print_run_summary(summary, run_dir)
+
+
+def is_successful_terminal_stop(stop_reason: str | None) -> bool:
+    """Only an explicit model stop is a successful autonomous run."""
+    return stop_reason == "model_stop"
 
 
 def load_dataset_info(args: argparse.Namespace) -> dict[str, Any]:

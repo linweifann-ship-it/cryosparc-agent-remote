@@ -8,7 +8,7 @@ from dynamic_candidates import (
 )
 
 class DynamicCandidateTests(unittest.TestCase):
-    def test_inspect_picks_uses_local_automatic_policy(self):
+    def test_inspect_picks_uses_dedicated_interactive_dispatch(self):
         from dynamic_candidates import build_registry_candidate
         from job_specs import get_job_spec
 
@@ -26,8 +26,10 @@ class DynamicCandidateTests(unittest.TestCase):
 
         node = {"cryosparc_job_uid": "J1", "workflow_node_id": "J1"}
         action = build_registry_candidate(node, RegistrySpec(), {"particles": []})
-        self.assertFalse(action["job_spec_metadata"]["interactive"])
+        self.assertTrue(action["job_spec_metadata"]["interactive"])
         self.assertFalse(action["job_spec_metadata"]["requires_approval"])
+        self.assertEqual(action["execution_mode"], "interactive_mcp")
+        self.assertEqual(action["mcp_tool_name"], "execute_interactive_cryosparc_job")
 
     def test_registry_parameter_types_and_constraints_are_preserved(self):
         spec = SimpleNamespace(

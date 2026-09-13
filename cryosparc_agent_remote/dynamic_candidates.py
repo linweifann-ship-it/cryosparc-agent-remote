@@ -6,6 +6,9 @@ from cryosparc_client import cryosparc_client
 from job_specs import DEFAULT_GPU_LANE, get_job_spec
 
 
+INTERACTIVE_EXECUTION_TOOL = "execute_interactive_cryosparc_job"
+
+
 def build_registry_next_actions(
     workflow_state: Dict[str, Any],
     current_node: Dict[str, Any],
@@ -263,11 +266,6 @@ def build_registry_candidate(
     tags = set(getattr(registry_spec, "tags", []) or [])
     requires_gpu = "gpuEnabled" in tags
     interactive = bool(getattr(registry_spec, "interactive", False))
-    requires_approval = interactive
-    # Inspect Picks has an automatic threshold mode in this agent.
-    if job_type == "inspect_picks_v2":
-        interactive = local_spec["interactive"]
-        requires_approval = local_spec["requires_approval"]
     default_lane = os.getenv("CRYOAGENT_GPU_LANE", DEFAULT_GPU_LANE) if requires_gpu else None
     parameter_template = registry_parameter_template(registry_spec)
     return {
@@ -279,7 +277,11 @@ def build_registry_candidate(
         "job_type": job_type,
         "description": getattr(registry_spec, "title", None)
         or f"Create {job_type} using compatible completed outputs.",
-        "execution_mode": "create_job",
+        # Interactive CryoSPARC jobs still create a normal, non-destructive job,
+        # but must be submitted without a lane.  Make that dispatch contract
+        # explicit so the executor never discovers it only after generic submit.
+        "execution_mode": "interactive_mcp" if interactive else "create_job",
+        "mcp_tool_name": INTERACTIVE_EXECUTION_TOOL if interactive else None,
         "available": True,
         "blocked_by": [],
         "required_inputs": required_inputs,
@@ -295,8 +297,9 @@ def build_registry_candidate(
             "category": getattr(registry_spec, "category", None) or local_spec["category"],
             "requires_gpu": requires_gpu,
             "multi_gpu": "multiGpu" in tags,
-            "requires_approval": requires_approval,
+            "requires_approval": False,
             "interactive": interactive,
+            "destructive": False,
             "default_lane": default_lane,
             "max_auto_gpus": local_spec["max_auto_gpus"],
         },

@@ -591,5 +591,57 @@ def execute_v2_model_decision(
     )
 
 
+@mcp.tool()
+def execute_interactive_cryosparc_job(
+    decision: dict[str, Any],
+    project_uid: str,
+    workspace_uid: str,
+    current_node_id: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Execute a validated interactive Registry action through its dedicated dispatch mode."""
+    candidate_context = registry_get_candidate_actions(
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
+    )
+    adapter_result = adapt_v2_decision_to_internal(
+        decision,
+        candidate_context["candidate_actions"],
+        current_node_id=candidate_context["current_node_id"],
+    )
+    selected_ids = {
+        action.get("action_id")
+        for action in (adapter_result.get("internal_decision") or {}).get("selected_actions") or []
+    }
+    selected_candidates = [
+        action for action in candidate_context["candidate_actions"]
+        if action.get("action_id") in selected_ids
+    ]
+    if not adapter_result.get("success") or not selected_candidates or any(
+        action.get("execution_mode") != "interactive_mcp"
+        or action.get("mcp_tool_name") != "execute_interactive_cryosparc_job"
+        for action in selected_candidates
+    ):
+        return {
+            "success": False,
+            "execution_mode": "interactive_tool_rejected",
+            "issues": [{
+                "severity": "error",
+                "code": "interactive_tool_requires_interactive_action",
+                "message": "This tool accepts only available interactive Registry actions.",
+                "path": "decision.selected_actions",
+            }],
+        }
+    result = execute_v2_model_decision_payload(
+        decision,
+        project_uid=project_uid,
+        workspace_uid=workspace_uid,
+        current_node_id=current_node_id,
+        dry_run=dry_run,
+    )
+    return result
+
+
 if __name__ == "__main__":
     mcp.run()

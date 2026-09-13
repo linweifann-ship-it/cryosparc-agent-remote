@@ -1478,10 +1478,21 @@ def validate_action_against_candidates(
             **(candidate.get("default_parameters") or {}),
             **action.parameters,
         }
+        mcp_tool_name = candidate.get("mcp_tool_name")
+        if not execution_contract_is_available(execution_mode, mcp_tool_name):
+            issues.append(ValidationIssue(
+                code="execution_tool_unavailable",
+                message=(
+                    f"Candidate {action.action_id!r} requires unavailable "
+                    f"execution tool {mcp_tool_name!r}."
+                ),
+                path=path,
+            ))
     else:
         parameter_template = get_parameter_template(action.job_type)
         execution_mode = "create_job"
         parameters = action.parameters
+        mcp_tool_name = None
         warnings.append(
             ValidationIssue(
                 severity="warning",
@@ -1536,9 +1547,21 @@ def validate_action_against_candidates(
             execution_mode=execution_mode,
             resolved_parameters=resolved_parameters,
             connections=action.connections,
-            mcp_tool_name=None,
+            mcp_tool_name=mcp_tool_name,
         ),
     )
+
+
+def execution_contract_is_available(
+    execution_mode: str,
+    mcp_tool_name: str | None,
+) -> bool:
+    """Validate the executor dispatch contract before live submission."""
+    if execution_mode in {"create_job", "dry_run_only"}:
+        return mcp_tool_name is None
+    if execution_mode == "interactive_mcp":
+        return mcp_tool_name == "execute_interactive_cryosparc_job"
+    return False
 
 
 def validate_parameters(

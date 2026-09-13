@@ -148,12 +148,12 @@ def approval_reasons_for(
 ) -> list[str]:
     """Explain why a planned action needs human approval."""
     reasons: list[str] = []
-    if spec["requires_approval"]:
-        reasons.append("job_spec_requires_approval")
-    if spec["interactive"]:
-        reasons.append("interactive_job")
-    if action["action_type"] == "branch":
-        reasons.append("branch_decision")
+    # An interactive UI is an execution detail, not a scientific approval gate.
+    # The model selected the validated action; interactive jobs are dispatched
+    # through their dedicated path below.  Only destructive work and genuinely
+    # excessive resource requests retain a human gate.
+    if spec.get("destructive", False):
+        reasons.append("destructive_action")
     gpu_count = action["resolved_parameters"].get("compute_num_gpus")
     if (
         spec["requires_gpu"]
@@ -203,6 +203,50 @@ def execute_job_action(
             ],
         }
 
+    if planned_action.get("execution_mode") == "interactive_mcp":
+        return execute_interactive_job_action(
+            project_uid, workspace_uid, planned_action,
+        )
+    return execute_standard_job_action(project_uid, workspace_uid, planned_action)
+
+
+def execute_standard_job_action(
+    project_uid: str,
+    workspace_uid: str,
+    planned_action: dict[str, Any],
+) -> dict[str, Any]:
+    """Submit a validated non-interactive CryoSPARC job."""
+    return _submit_job_action(project_uid, workspace_uid, planned_action)
+
+
+def execute_interactive_job_action(
+    project_uid: str,
+    workspace_uid: str,
+    planned_action: dict[str, Any],
+) -> dict[str, Any]:
+    """Submit a validated interactive job without queue/lane arguments."""
+    if planned_action.get("mcp_tool_name") != "execute_interactive_cryosparc_job":
+        return {
+            "success": False,
+            "dry_run": False,
+            "status": "execution_tool_unavailable",
+            "planned_action": planned_action,
+            "issues": [{
+                "severity": "error",
+                "code": "execution_tool_unavailable",
+                "message": "Interactive action has no supported MCP dispatch tool.",
+                "path": None,
+            }],
+        }
+    return _submit_job_action(project_uid, workspace_uid, planned_action)
+
+
+def _submit_job_action(
+    project_uid: str,
+    workspace_uid: str,
+    planned_action: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the job and queue it only when its execution contract permits."""
     job = None
     scheduling = refresh_scheduling_plan(planned_action)
     planned_action = {

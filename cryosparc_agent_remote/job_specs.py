@@ -61,8 +61,9 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
     "curate_exposures_v2": {
         "category": "curation",
         "requires_gpu": False,
-        "requires_approval": True,
+        "requires_approval": False,
         "interactive": True,
+        "destructive": False,
         "parameter_template": {},
     },
     "blob_picker_gpu": {
@@ -92,7 +93,8 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
         "category": "inspection",
         "requires_gpu": False,
         "requires_approval": False,
-        "interactive": False,
+        "interactive": True,
+        "destructive": False,
         "parameter_template": {
             "n_mic_to_plot": {"type": "integer", "minimum": 1},
             "checkpoint_freq": {"type": "integer", "minimum": 1},
@@ -145,8 +147,9 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
     "select_2D": {
         "category": "selection",
         "requires_gpu": False,
-        "requires_approval": True,
+        "requires_approval": False,
         "interactive": True,
+        "destructive": False,
         "parameter_template": {
             # CryoSPARC expects a comma-separated class-index string.
             "selected_templates": {"type": "string"},
@@ -180,11 +183,15 @@ JOB_SPECS: dict[str, dict[str, Any]] = {
 
 def get_job_spec(job_type: str) -> dict[str, Any]:
     """Return metadata for a job type, using safe defaults for unknown jobs."""
+    is_supported = job_type in JOB_SPECS
     spec = deepcopy(JOB_SPECS.get(job_type, {}))
     spec.setdefault("category", "unknown")
     spec.setdefault("requires_gpu", False)
     spec.setdefault("requires_approval", True)
     spec.setdefault("interactive", False)
+    # Unknown job types are fail-closed.  Live Registry candidates explicitly
+    # provide destructive=False after compatibility validation.
+    spec.setdefault("destructive", not is_supported)
     spec.setdefault("max_auto_gpus", HIGH_GPU_APPROVAL_THRESHOLD)
     spec.setdefault("parameter_template", {})
     return spec
