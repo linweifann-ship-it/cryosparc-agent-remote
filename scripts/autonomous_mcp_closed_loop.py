@@ -19,6 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from model_direct_runner import parse_model_decision_text, run_openai_compatible_model
 from inspect_picks_evidence import build_inspect_picks_observation
+from cryosparc_agent_remote.missing_parameter_recovery import (
+    MAX_HEURISTIC_ATTEMPTS,
+    consume_request_input_retry,
+    recovery_feedback,
+)
 
 
 DEFAULT_BASE_MODEL = "/ssd1/lisongyang/models/Qwen3.6-27B-ms-test"
@@ -201,6 +206,7 @@ async def main_async() -> None:
     current_node = args.current_node
     feedback_to_model: dict[str, Any] | None = None
     validation_failures = 0
+    heuristic_attempts: dict[str, int] = {}
 
     model_worker = None
     api_config = None
@@ -277,6 +283,14 @@ async def main_async() -> None:
                     "current_node_id": current_node,
                 },
             )
+            parameter_feedback = recovery_feedback(
+                candidate_context.get("candidate_actions") or [],
+                dataset_info,
+                heuristic_attempts,
+            )
+            if parameter_feedback:
+                model_input["missing_required_parameter_feedback"] = parameter_feedback
+                candidate_context["missing_required_parameter_feedback"] = parameter_feedback
             round_log["model_input"] = model_input
             round_log["candidate_context"] = candidate_context
             write_json(round_dir / "model_input.json", model_input, round_log)
@@ -401,7 +415,21 @@ async def main_async() -> None:
 
             validation_failures = 0
             decision_type = decision.get("decision_type")
-            if decision_type in {"stop", "complete"}:
+            if decision_type == "request_input" and parameter_feedback:
+                if consume_request_input_retry(
+                    decision, parameter_feedback, heuristic_attempts
+                ):
+                    feedback_to_model = make_feedback(
+                        round_index,
+                        "missing_required_parameter_recovery",
+                        parameter_feedback,
+                        model_input,
+                        candidate_context,
+                        failed_decision=decision,
+                    )
+                    round_log["next_round_reason"] = "Required scientific parameter feedback sent to Model for a bounded retry."
+                    continue
+            if decision_type in {"stop", "complete", "request_input"}:
                 summary["stop_reason"] = f"model_{decision_type}"
                 round_log["next_round_reason"] = decision.get("reason")
                 break
@@ -510,7 +538,7 @@ async def main_async() -> None:
             summary["stop_reason"] = "max_rounds_reached"
 
     summary["finished_at"] = utc_now()
-    summary["success"] = summary["stop_reason"] in {"model_stop", "model_complete", "max_rounds_reached"}
+    summary["success"] = summary["stop_reason"] == "model_stop"
     write_json(run_dir / "summary.json", summary, None)
     print_run_summary(summary, run_dir)
 
@@ -528,7 +556,7 @@ def build_autonomous_prompt(
 ) -> list[dict[str, str]]:
     output_contract = {
         "schema_version": "2.0",
-        "decision_type": "forward | branch | rollback | stop",
+        "decision_type": "forward | branch | rollback | stop | request_input",
         "action": "CryoSPARC job type for forward/branch decisions.",
         "job_type": "Same as action when using compact format.",
         "parameters": "Only non-default parameters explicitly chosen by the model.",
@@ -546,11 +574,15 @@ def build_autonomous_prompt(
     payload = {
         "round": round_index,
         "instruction": (
-            "Choose exactly one next action, rollback, or stop from the current "
+            "Choose exactly one next action, rollback, request_input, or stop from the current "
             "CryoSPARC state. Do not repeat completed Import Micrographs. "
             "If you choose a job, include every required input connection you "
-            "want MCP to use. MCP will return validation or execution errors "
-            "without repairing your decision."
+            "want MCP to use. Registry validation remains strict before creation. "
+            "When a candidate lists a required scientific parameter with no default, "
+            "you may estimate it from domain knowledge, current data, and general practice. "
+            "Label every such heuristic explicitly as estimated or assumed in reason/evidence; "
+            "never present it as an observed fact. Use request_input only when no reasonable "
+            "and safe estimate is possible or its bounded retries are exhausted."
         ),
         "model_input": model_input,
         "output_contract": output_contract,
