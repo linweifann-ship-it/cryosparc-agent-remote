@@ -47,6 +47,21 @@ class DynamicCandidateTests(unittest.TestCase):
         self.assertEqual(template["diameter"]["minimum"], 10)
         self.assertEqual(template["diameter_max"]["type"], "number")
 
+    def test_registry_optional_flag_is_not_promoted_to_required(self):
+        spec = SimpleNamespace(type="blob_picker_gpu", params={
+            "diameter": SimpleNamespace(type="number", anyOf=[], required_param=False, default=None, hidden=False, enum=None, ge=10, le=None),
+        })
+        self.assertNotIn("required", registry_parameter_template(spec)["diameter"])
+
+    def test_missing_requirement_metadata_is_marked_unknown(self):
+        spec = SimpleNamespace(type="blob_picker_gpu", params={
+            "diameter": SimpleNamespace(type="number", anyOf=[], default=None, hidden=False, enum=None, ge=None, le=None),
+        })
+        self.assertEqual(
+            registry_parameter_template(spec)["diameter"]["requirement_status"],
+            "unknown",
+        )
+
     def test_registry_candidate_defaults_follow_schema_and_exclude_hidden(self):
         spec = SimpleNamespace(
             type="patch_ctf_estimation_multi",

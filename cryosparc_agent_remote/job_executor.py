@@ -189,6 +189,7 @@ def execute_job_action(
             ],
         }
 
+    job = None
     try:
         cs = cryosparc_client()
         workspace = cs.find_workspace(project_uid, workspace_uid)
@@ -201,17 +202,26 @@ def execute_job_action(
         )
         queue = planned_action["queue"]
         queued = False
-        if queue["will_queue"]:
-            if queue["lane"]:
-                job.queue(
-                    lane=queue["lane"],
-                    hostname=queue["hostname"],
-                    gpus=queue["gpus"],
-                    cluster_vars=queue["cluster_vars"],
-                )
-            else:
-                job.queue()
-            queued = True
+        try:
+            if queue["will_queue"]:
+                if queue["lane"]:
+                    job.queue(
+                        lane=queue["lane"], hostname=queue["hostname"],
+                        gpus=queue["gpus"], cluster_vars=queue["cluster_vars"],
+                    )
+                else:
+                    job.queue()
+                queued = True
+        except Exception as exc:
+            return {
+                "success": False, "dry_run": False, "status": "partial_side_effect",
+                "partial_side_effect": True, "project_uid": project_uid,
+                "workspace_uid": workspace_uid, "job_uid": job.uid,
+                "job_type": planned_action["job_type"],
+                "created_job": {"job_uid": job.uid, "status": job.status},
+                "enqueue_failed": True, "error": str(exc),
+                "error_type": type(exc).__name__, "planned_action": planned_action,
+            }
 
         return {
             "success": True,

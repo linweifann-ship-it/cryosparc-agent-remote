@@ -212,7 +212,10 @@ def generate_candidate_actions(
             action for action in candidates
             if action.get("job_type") not in blocked_job_types
         ]
-        candidates = merge_candidates(candidates, registry_actions)
+        # A live Registry schema is authoritative over a synthetic fallback.
+        # In particular, it carries required/conditional parameter semantics
+        # that cannot safely be inferred from the fallback's small schema.
+        candidates = merge_candidates(registry_actions, candidates)
         blocked = merge_candidates(blocked, registry_blocked)
 
     if current_node.get("job_type") == "class_2D_new":

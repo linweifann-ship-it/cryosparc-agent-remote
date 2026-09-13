@@ -209,8 +209,14 @@ def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]
             continue
         value_type = registry_param_type(param)
         item = {"type": value_type}
-        if getattr(param, "required_param", False):
+        registry_required = getattr(param, "required_param", None)
+        legacy_required = getattr(param, "required", None)
+        if registry_required is True or legacy_required is True:
             item["required"] = True
+        elif registry_required is None and legacy_required is None:
+            # Do not guess that an incomplete Registry object is optional.
+            # Consumers can surface this as an unknown/conditional requirement.
+            item["requirement_status"] = "unknown"
         if getattr(param, "default", None) is not None:
             item["default"] = normalize_parameter_default(param.default, value_type)
         enum = getattr(param, "enum", None)

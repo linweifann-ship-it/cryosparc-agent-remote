@@ -18,6 +18,7 @@ from mcp.client.stdio import stdio_client
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from model_direct_runner import parse_model_decision_text, run_openai_compatible_model
+from inspect_picks_evidence import build_inspect_picks_observation
 
 
 DEFAULT_BASE_MODEL = "/ssd1/lisongyang/models/Qwen3.6-27B-ms-test"
@@ -264,6 +265,9 @@ async def main_async() -> None:
                 context_args,
             )
             model_input["failure_context"] = build_failure_context(feedback_to_model)
+            inspect_observation = completed_inspect_picks_observation(feedback_to_model)
+            if inspect_observation:
+                model_input.setdefault("tool_evidence", {})["inspect_picks"] = inspect_observation
             candidate_context = await call_tool_json(
                 session,
                 "get_candidate_actions",
@@ -462,6 +466,12 @@ async def main_async() -> None:
                         "result": job_result,
                     }
                 )
+            for feedback in job_feedbacks:
+                result = feedback["result"]
+                if result.get("job_type") == "inspect_picks_v2" and result.get("status") == "completed":
+                    result["inspect_picks_observation"] = build_inspect_picks_observation(
+                        result, applied_parameters_for_job(execution, result.get("job_uid")), visual_context,
+                    )
             round_log["job_results"] = job_feedbacks
             write_json(round_dir / "job_results.json", job_feedbacks, round_log)
 
@@ -1355,6 +1365,8 @@ def find_created_jobs(execution: dict[str, Any]) -> list[dict[str, Any]]:
     results = execution_result.get("execution_results") or []
     created = []
     for item in results:
+        if item.get("partial_side_effect"):
+            continue
         job_uid = item.get("job_uid")
         if job_uid:
             created.append(
@@ -1367,6 +1379,23 @@ def find_created_jobs(execution: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
     return created
+
+
+def applied_parameters_for_job(execution: dict[str, Any], job_uid: str | None) -> dict[str, Any]:
+    """Return executor-resolved parameters for an actually created Job."""
+    results = (execution.get("execution_result") or {}).get("execution_results") or []
+    for item in results:
+        if item.get("job_uid") == job_uid:
+            return ((item.get("planned_action") or {}).get("resolved_parameters") or {}).copy()
+    return {}
+
+
+def completed_inspect_picks_observation(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Expose completed Inspect Picks evidence as normal next-round evidence."""
+    if not feedback or feedback.get("feedback_type") != "job_result":
+        return None
+    observation = (feedback.get("payload") or {}).get("inspect_picks_observation")
+    return observation if isinstance(observation, dict) else None
 
 
 def collect_job_logs(
