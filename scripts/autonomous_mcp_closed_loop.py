@@ -20,7 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from model_direct_runner import parse_model_decision_text, run_openai_compatible_model
 from inspect_picks_evidence import build_inspect_picks_observation
 from cryosparc_agent_remote.missing_parameter_recovery import (
+    candidate_actions_for_model_recovery,
     consume_request_input_retry,
+    current_node_from_model_context,
     inject_model_parameter_recovery_guidance,
 )
 
@@ -269,6 +271,9 @@ async def main_async() -> None:
                 "get_workflow_decision_context",
                 context_args,
             )
+            if current_node is None:
+                current_node = current_node_from_model_context(model_input)
+                round_log["current_node"] = current_node
             model_input["failure_context"] = build_failure_context(feedback_to_model)
             inspect_observation = completed_inspect_picks_observation(feedback_to_model)
             if inspect_observation:
@@ -282,12 +287,21 @@ async def main_async() -> None:
                     "current_node_id": current_node,
                 },
             )
+            recovery_candidate_context = {
+                "candidate_actions": candidate_actions_for_model_recovery(
+                    model_input, candidate_context
+                )
+            }
             parameter_feedback = inject_model_parameter_recovery_guidance(
                 model_input,
-                candidate_context,
+                recovery_candidate_context,
                 dataset_info,
                 heuristic_attempts,
             )
+            if parameter_feedback:
+                candidate_context["parameter_recovery_guidance"] = model_input[
+                    "parameter_recovery_guidance"
+                ]
             round_log["model_input"] = model_input
             round_log["candidate_context"] = candidate_context
             write_json(round_dir / "model_input.json", model_input, round_log)

@@ -5,7 +5,11 @@ import types
 import unittest
 from pathlib import Path
 
-from missing_parameter_recovery import inject_model_parameter_recovery_guidance
+from missing_parameter_recovery import (
+    candidate_actions_for_model_recovery,
+    current_node_from_model_context,
+    inject_model_parameter_recovery_guidance,
+)
 
 
 def action(job_type: str, parameter: str, spec: dict) -> dict:
@@ -65,6 +69,21 @@ class MissingParameterModelContextTests(unittest.TestCase):
         inject_model_parameter_recovery_guidance(model_input, candidates, {}, {})
         parameters = model_input["failure_context"]["parameter_recovery_guidance"]["parameters"]
         self.assertEqual(parameters[0]["parameter"], "box_size_pix")
+
+    def test_model_context_candidates_win_over_restart_fallback_candidates(self):
+        blob = action("blob_picker_gpu", "diameter", {"type": "number"})
+        fallback = action("import_micrographs", "blob_paths", {"type": "string"})
+        model_input = {"candidate_actions": [blob], "failure_context": None}
+        fallback_context = {"candidate_actions": [fallback]}
+        selected = candidate_actions_for_model_recovery(model_input, fallback_context)
+        feedback = inject_model_parameter_recovery_guidance(
+            model_input, {"candidate_actions": selected}, {}, {}
+        )
+        self.assertEqual(feedback["missing_required_parameters"][0]["job_type"], "blob_picker_gpu")
+        self.assertEqual(
+            current_node_from_model_context({"candidate_context": {"current_node_id": "J12"}}),
+            "J12",
+        )
 
     def test_non_scientific_string_requirement_is_not_presented_as_a_heuristic(self):
         model_input = {"failure_context": None}

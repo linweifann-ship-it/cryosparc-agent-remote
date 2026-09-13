@@ -105,6 +105,19 @@ def inject_model_parameter_recovery_guidance(
     return feedback
 
 
+def candidate_actions_for_model_recovery(
+    model_input: dict[str, Any], candidate_context: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Prefer candidates already selected for this Model decision context."""
+    return model_input.get("candidate_actions") or candidate_context.get("candidate_actions") or []
+
+
+def current_node_from_model_context(model_input: dict[str, Any]) -> str | None:
+    """Recover the authoritative terminal node when a harness is restarted."""
+    context = model_input.get("candidate_context") or {}
+    return context.get("current_node_id") or model_input.get("current_job_uid")
+
+
 def attempt_keys_for_decision(
     decision: dict[str, Any], feedback: dict[str, Any] | None
 ) -> list[str]:
