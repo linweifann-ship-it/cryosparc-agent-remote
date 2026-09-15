@@ -2,6 +2,7 @@
 from typing import Any
 import math
 import os
+import re
 
 from schemas import (
     Action,
@@ -1432,6 +1433,7 @@ def validate_decision_against_registry(
                 action,
                 candidates_by_id,
                 idx,
+                narrative=" ".join([decision.reason, *decision.evidence]),
             )
         )
         issues.extend(action_issues)
@@ -1455,6 +1457,7 @@ def validate_action_against_candidates(
     action: Action,
     candidates_by_id: dict[str, dict[str, Any]],
     index: int,
+    narrative: str = "",
 ) -> tuple[list[ValidationIssue], list[ValidationIssue], ResolvedAction | None]:
     """Validate one selected action and resolve its final parameters."""
     issues: list[ValidationIssue] = []
@@ -1516,6 +1519,22 @@ def validate_action_against_candidates(
         parameters,
         parameter_template,
         path=f"{path}.parameters",
+    )
+    parameter_issues.extend(
+        validate_parameter_unit_narrative(
+            action.parameters,
+            parameter_template,
+            narrative,
+            path=f"{path}.parameters",
+        )
+    )
+    parameter_issues.extend(
+        validate_recovery_optional_overrides(
+            action.parameters,
+            parameter_template,
+            narrative,
+            path=f"{path}.parameters",
+        )
     )
     gpu_cap_raw = os.getenv("CRYOAGENT_GPU_COUNT_CAP")
     if gpu_cap_raw and "compute_num_gpus" in resolved_parameters:
@@ -1685,6 +1704,141 @@ def validate_parameter_value(
             )
 
     return issues
+
+
+def validate_parameter_unit_narrative(
+    supplied_parameters: dict[str, Any],
+    template: dict[str, dict[str, Any]],
+    narrative: str,
+    path: str,
+) -> list[ValidationIssue]:
+    """Reject an explicit pixel claim for a Registry physical-length parameter.
+
+    The numeric payload itself cannot carry a unit. This narrow consistency
+    check therefore applies only when the Model's own reason/evidence states
+    that a value for an A-unit Registry parameter is in pixels. A pixel
+    sampling value alone is not evidence of a particle's physical size.
+    """
+    if not narrative:
+        return []
+    issues: list[ValidationIssue] = []
+    for name in supplied_parameters:
+        spec = template.get(name) or {}
+        if spec.get("unit") != "A":
+            continue
+        if parameter_value_claimed_in_pixels(name, narrative):
+            issues.append(
+                ValidationIssue(
+                    code="parameter_unit_mismatch",
+                    message=(
+                        f"Parameter {name!r} uses Registry unit 'A' and cannot be "
+                        "described as pixels or inferred from pixel size alone."
+                    ),
+                    path=f"{path}.{name}",
+                )
+            )
+        elif physical_parameter_inferred_from_pixel_scale_only(name, narrative):
+            issues.append(
+                ValidationIssue(
+                    code="parameter_pixel_scale_inference",
+                    message=(
+                        f"Parameter {name!r} uses Registry unit 'A' and cannot be "
+                        "estimated from pixel size alone; provide an observed measurement, "
+                        "reference, or explicitly supplied validated historical evidence."
+                    ),
+                    path=f"{path}.{name}",
+                )
+            )
+    return issues
+
+
+def parameter_value_claimed_in_pixels(name: str, narrative: str) -> bool:
+    """Recognize only a direct '<parameter> ... <value> pixels' statement."""
+    escaped_name = re.escape(name)
+    direct_pixel_value = re.compile(
+        rf"\b{escaped_name}\b\s*(?:(?:is|of|equals|about|around|approximately)\s*)?"
+        r"(?:=|:)?\s*[-+]?\d+(?:\.\d+)?\s*(?:pixels?|px)\b",
+        flags=re.IGNORECASE,
+    )
+    return bool(direct_pixel_value.search(narrative))
+
+
+def physical_parameter_inferred_from_pixel_scale_only(name: str, narrative: str) -> bool:
+    """Recognize a physical-size estimate whose stated basis is only sampling."""
+    escaped_name = re.escape(name)
+    pixel_scale_only = re.compile(
+        rf"\b{escaped_name}\b.{{0,160}}\bbased\s+on\s+"
+        r"(?:the\s+)?(?:available\s+|dataset\s+|current\s+|known\s+)?"
+        r"(?:pixel\s*(?:size|scale)|[-+]?\d+(?:\.\d+)?\s*(?:a|å|angstroms?)\s*/\s*(?:pixels?|px))\b",
+        flags=re.IGNORECASE,
+    )
+    return bool(pixel_scale_only.search(narrative))
+
+
+def validate_recovery_optional_overrides(
+    supplied_parameters: dict[str, Any],
+    template: dict[str, dict[str, Any]],
+    narrative: str,
+    path: str,
+) -> list[ValidationIssue]:
+    """Require an auditable basis for optional tuning during required recovery.
+
+    This applies only when the Model is supplying a required Registry field
+    with no default. The Model remains free to make an optional scientific
+    choice, but must name that override in its reason/evidence; otherwise the
+    safe default is left in place for the next decision.
+    """
+    completing_required_parameter = any(
+        spec.get("required")
+        and spec.get("default") is None
+        and name in supplied_parameters
+        for name, spec in template.items()
+    )
+    if not completing_required_parameter:
+        return []
+
+    issues: list[ValidationIssue] = []
+    for name in supplied_parameters:
+        spec = template.get(name)
+        if spec is None or spec.get("required"):
+            continue
+        if optional_override_is_named(name, spec, narrative):
+            continue
+        issues.append(
+            ValidationIssue(
+                code="unjustified_optional_parameter_override",
+                message=(
+                    f"Optional parameter {name!r} was supplied while recovering a "
+                    "missing required scientific parameter, but reason/evidence does "
+                    "not name an evidence-based justification for that override."
+                ),
+                path=f"{path}.{name}",
+            )
+        )
+    return issues
+
+
+def optional_override_is_named(
+    name: str,
+    spec: dict[str, Any],
+    narrative: str,
+) -> bool:
+    """Accept canonical or Registry-title references, never guessed aliases."""
+    normalized_narrative = normalize_parameter_reference(narrative)
+    references = [name, name.replace("_", " ")]
+    title = spec.get("title")
+    if isinstance(title, str):
+        references.append(title)
+    return any(
+        reference
+        and normalize_parameter_reference(reference) in normalized_narrative
+        for reference in references
+    )
+
+
+def normalize_parameter_reference(value: str) -> str:
+    """Normalize Registry/UI identifiers for exact, auditable matching."""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
 
 
 def matches_type(value: Any, expected_type: str) -> bool:

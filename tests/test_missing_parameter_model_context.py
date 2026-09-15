@@ -70,6 +70,28 @@ class MissingParameterModelContextTests(unittest.TestCase):
         parameters = model_input["failure_context"]["parameter_recovery_guidance"]["parameters"]
         self.assertEqual(parameters[0]["parameter"], "box_size_pix")
 
+    def test_first_call_guidance_requires_registry_units_and_default_preservation(self):
+        model_input = {"failure_context": None}
+        candidates = {"candidate_actions": [action("blob_picker_gpu", "diameter", {
+            "type": "number", "title": "Minimum particle diameter (A)",
+            "description": "Min Particle diameter (A)", "unit": "A",
+            "unit_source": "registry_ui_contract",
+        })]}
+        inject_model_parameter_recovery_guidance(
+            model_input, candidates, {"pixel_size_A": 0.6575}, {}
+        )
+        guidance = model_input["parameter_recovery_guidance"]
+        self.assertEqual(guidance["parameters"][0]["unit"], "A")
+        self.assertTrue(guidance["policy"]["registry_parameter_units_are_authoritative"])
+        self.assertTrue(guidance["policy"]["pixel_size_is_not_particle_size_evidence"])
+        self.assertTrue(guidance["policy"]["preserve_optional_registry_defaults_without_evidence"])
+        self.assertIn("pixel size alone", guidance["model_instruction"])
+
+        runner = load_active_runner()
+        prompt = runner.build_autonomous_prompt(model_input, candidates, round_index=1)
+        instruction = json.loads(prompt[1]["content"])["instruction"]
+        self.assertIn("preserve optional Registry defaults", instruction)
+
     def test_model_context_candidates_win_over_restart_fallback_candidates(self):
         blob = action("blob_picker_gpu", "diameter", {"type": "number"})
         fallback = action("import_micrographs", "blob_paths", {"type": "string"})

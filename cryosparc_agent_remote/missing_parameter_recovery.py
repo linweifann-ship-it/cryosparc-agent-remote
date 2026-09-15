@@ -26,8 +26,11 @@ def missing_required_parameters(actions: list[dict[str, Any]]) -> list[dict[str,
                     "job_type": action.get("job_type"),
                     "parameter": name,
                     "requirement_status": "required_missing",
+                    "title": spec.get("title"),
                     "description": spec.get("description"),
                     "type": spec.get("type"),
+                    "unit": spec.get("unit"),
+                    "unit_source": spec.get("unit_source"),
                     "minimum": spec.get("minimum"),
                     "maximum": spec.get("maximum"),
                     "enum": spec.get("enum"),
@@ -65,6 +68,12 @@ def recovery_feedback(
             "observed_facts_must_not_be_invented": True,
             "heuristic_estimates_allowed": True,
             "heuristic_evidence_label_required": True,
+            "heuristic_basis_unit_and_risk_required": True,
+            "registry_parameter_units_are_authoritative": True,
+            "pixel_size_is_not_particle_size_evidence": True,
+            "complete_only_missing_required_parameters": True,
+            "preserve_optional_registry_defaults_without_evidence": True,
+            "validated_historical_experience_allowed_only_when_supplied_as_evidence": True,
             "request_input_only_when_no_safe_estimate": True,
             "max_attempts_per_action_parameter": MAX_HEURISTIC_ATTEMPTS,
         },
@@ -90,9 +99,14 @@ def inject_model_parameter_recovery_guidance(
         "policy": feedback["policy"],
         "model_instruction": (
             "For these required scientific parameters, you may provide a conservative "
-            "heuristic estimate from domain knowledge and current evidence. Explicitly "
-            "label it estimated or assumed in reason/evidence; do not invent observed facts. "
-            "Use request_input only if no reasonable safe estimate is possible."
+            "heuristic estimate from domain knowledge, current evidence, or explicitly "
+            "supplied validated historical experience. The Registry title, description, and "
+            "unit are the authoritative parameter contract: do not relabel a physical-size "
+            "parameter as pixels or derive its size from pixel size alone. Complete only the "
+            "missing required parameters and preserve optional Registry defaults unless specific "
+            "evidence supports an override. Explicitly label every heuristic estimated or assumed "
+            "and record its basis, Registry unit, and uncertainty/risk in reason/evidence; do not "
+            "invent observed facts. Use request_input only if no reasonable safe estimate is possible."
         ),
     }
     model_input["parameter_recovery_guidance"] = guidance

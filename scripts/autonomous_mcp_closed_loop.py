@@ -591,9 +591,14 @@ def build_autonomous_prompt(
             "want MCP to use. Registry validation remains strict before creation. "
             "When a candidate lists a required scientific parameter with no default, "
             "you may estimate it from domain knowledge, current data, and general practice. "
-            "Label every such heuristic explicitly as estimated or assumed in reason/evidence; "
-            "never present it as an observed fact. Use request_input only when no reasonable "
-            "and safe estimate is possible or its bounded retries are exhausted."
+            "Treat each candidate parameter's Registry title, description, and unit as the "
+            "authoritative contract: pixel size is sampling information, not particle-size evidence, "
+            "so never relabel a physical-size parameter as pixels or infer it from pixel size alone. "
+            "For a missing-required recovery, supply only the missing required parameter(s) and preserve "
+            "optional Registry defaults unless direct evidence supports an override. Label every heuristic "
+            "explicitly as estimated or assumed and record its basis, Registry unit, and uncertainty/risk "
+            "in reason/evidence; never present it as an observed fact. Use request_input only when no "
+            "reasonable and safe estimate is possible or its bounded retries are exhausted."
         ),
         "model_input": model_input,
         "output_contract": output_contract,

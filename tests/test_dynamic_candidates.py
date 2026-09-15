@@ -61,6 +61,43 @@ class DynamicCandidateTests(unittest.TestCase):
         self.assertEqual(template["diameter"]["minimum"], 10)
         self.assertEqual(template["diameter_max"]["type"], "number")
 
+    def test_registry_ui_contract_exposes_physical_and_relative_units(self):
+        spec = SimpleNamespace(
+            type="blob_picker_gpu",
+            params={
+                "diameter": SimpleNamespace(
+                    type="number", anyOf=[], required_param=True, default=None,
+                    hidden=False, enum=None, ge=None, le=None,
+                    title="Minimum particle diameter (A)",
+                    description="Min Particle diameter (A)",
+                ),
+                "min_distance": SimpleNamespace(
+                    type="number", anyOf=[], required_param=False, default=1.0,
+                    hidden=False, enum=None, ge=None, le=None,
+                    title="Min. separation dist (diameters)",
+                    description="Minimum distance in units of particle diameter.",
+                ),
+            },
+        )
+        template = registry_parameter_template(spec)
+        self.assertEqual(template["diameter"]["unit"], "A")
+        self.assertEqual(template["diameter"]["unit_source"], "registry_ui_contract")
+        self.assertEqual(template["diameter"]["title"], "Minimum particle diameter (A)")
+        self.assertEqual(template["min_distance"]["unit"], "particle_diameters")
+
+    def test_registry_unit_requires_an_explicit_ui_contract(self):
+        spec = SimpleNamespace(
+            type="generic_job",
+            params={
+                "threshold": SimpleNamespace(
+                    type="number", anyOf=[], required_param=False, default=None,
+                    hidden=False, enum=None, ge=None, le=None,
+                    title="A threshold", description="Choose a conservative threshold.",
+                ),
+            },
+        )
+        self.assertNotIn("unit", registry_parameter_template(spec)["threshold"])
+
     def test_registry_optional_flag_is_not_promoted_to_required(self):
         spec = SimpleNamespace(type="blob_picker_gpu", params={
             "diameter": SimpleNamespace(type="number", anyOf=[], required_param=False, default=None, hidden=False, enum=None, ge=10, le=None),

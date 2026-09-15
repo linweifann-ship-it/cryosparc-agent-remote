@@ -1,6 +1,7 @@
 """Dynamic candidate discovery from the live CryoSPARC Job Registry."""
 from typing import Any, Dict, List, Optional, Set
 import os
+import re
 
 from cryosparc_client import cryosparc_client
 from job_specs import DEFAULT_GPU_LANE, get_job_spec
@@ -210,7 +211,7 @@ def infer_source_type(source: Dict[str, Any]) -> Optional[str]:
 
 
 def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]:
-    """Expose Registry types, defaults, enums, and numeric constraints."""
+    """Expose the live Registry parameter contract to candidates and Model."""
     template = {}
     for name, param in getattr(registry_spec, "params", {}).items():
         if getattr(param, "hidden", False):
@@ -236,8 +237,45 @@ def registry_parameter_template(registry_spec: Any) -> Dict[str, Dict[str, Any]]
             item["minimum"] = lower
         if upper is not None:
             item["maximum"] = upper
+        # CryoSPARC commonly records dimensions in the UI title/description
+        # rather than a dedicated ``unit`` field. Preserve those authoritative
+        # strings and promote an explicit unit token where the UI supplies one.
+        # Do not infer a unit from a parameter name or a dataset property.
+        for attribute in ("title", "description"):
+            value = getattr(param, attribute, None)
+            if isinstance(value, str) and value.strip():
+                item[attribute] = value.strip()
+        unit, unit_source = registry_parameter_unit(param)
+        if unit is not None:
+            item["unit"] = unit
+            item["unit_source"] = unit_source
         template[name] = item
     return template
+
+
+def registry_parameter_unit(param: Any) -> tuple[str | None, str | None]:
+    """Read only an explicit dimensional contract from a Registry UI field."""
+    for attribute in ("unit", "units"):
+        value = getattr(param, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), f"registry_{attribute}"
+
+    contract_text = " ".join(
+        str(getattr(param, attribute, "") or "")
+        for attribute in ("title", "description")
+    )
+    normalized = contract_text.lower()
+    if re.search(r"\(\s*(?:a|å|angstroms?)\s*\)|\bangstroms?\b", normalized):
+        return "A", "registry_ui_contract"
+    if "particle diameter" in normalized or "particle diameters" in normalized:
+        return "particle_diameters", "registry_ui_contract"
+    if re.search(r"\b(?:pixels?|px)\b", normalized):
+        return "pixels", "registry_ui_contract"
+    if re.search(r"\bdegrees?\b", normalized):
+        return "degrees", "registry_ui_contract"
+    if re.search(r"\bradians?\b", normalized):
+        return "radians", "registry_ui_contract"
+    return None, None
 
 
 def normalize_parameter_default(value: Any, value_type: str) -> Any:
