@@ -115,8 +115,10 @@ def build_workflow_decision_prompt(
             ) if visual_context.get("kind") != "pick_inspection" else (
                 "Review the Pick QC dashboard before the micrograph contact sheet. The dashboard "
                 "contains an Exposure Plot and observed NCC Score × Power Score density; the third "
-                "image contains targeted high-Power crops. Structured candidate upper-threshold rows "
-                "are sensitivity counts, not recommendations. Use only threshold fields exposed by "
+                "image contains paired evidence: every left panel is a typical-Power P40-P60 matched "
+                "control and every right panel is its high-Power target, with one shared grayscale range "
+                "within the pair. Compare morphology rather than brightness alone. Structured candidate "
+                "upper-threshold rows are sensitivity counts, not recommendations. Use only threshold fields exposed by "
                 "the candidate schema; an optional upper bound may be omitted or null."
             ),
             "structured_pick_statistics": (

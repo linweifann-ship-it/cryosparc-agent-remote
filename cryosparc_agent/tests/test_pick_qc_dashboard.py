@@ -7,9 +7,11 @@ from PIL import Image
 
 from vision_inputs import (
     _extract_particle_crop,
+    _normalize_particle_pair,
     build_pick_qc_dashboard,
     build_structured_pick_statistics,
     select_high_power_tail_particles,
+    select_typical_power_matched_controls,
 )
 
 
@@ -116,6 +118,38 @@ class PickQcDashboardTests(unittest.TestCase):
             crop = _extract_particle_crop(image, x_fraction, y_fraction, crop_size=4)
             self.assertEqual(crop.shape, (4, 4))
             self.assertTrue(np.isfinite(crop).all())
+
+    def test_typical_control_prefers_same_micrograph_then_nearest_ncc(self):
+        power = np.arange(100, dtype=np.float64)
+        ncc = np.zeros(100, dtype=np.float64)
+        uids = [1000 + index for index in range(100)]
+        uids[42] = uids[58] = uids[95] = 777
+        ncc[42] = 0.55
+        ncc[58] = 0.61
+        ncc[95] = 0.60
+
+        controls, metadata = select_typical_power_matched_controls(
+            [{"particle_index": 95, "tail_bin": "P99-P99.5"}],
+            uids,
+            ncc,
+            power,
+        )
+
+        self.assertEqual(controls[0]["particle_index"], 58)
+        self.assertEqual(controls[0]["matching_scope"], "same_micrograph")
+        self.assertAlmostEqual(controls[0]["ncc_difference"], 0.01)
+        self.assertEqual(metadata["same_micrograph_match_count"], 1)
+        self.assertFalse(metadata["visual_selection_used"])
+
+    def test_pair_normalization_uses_one_joint_grayscale_range(self):
+        control = np.linspace(0.0, 10.0, 64, dtype=np.float32).reshape(8, 8)
+        target = np.linspace(100.0, 110.0, 64, dtype=np.float32).reshape(8, 8)
+
+        control_tile, target_tile, metadata = _normalize_particle_pair(control, target, 8)
+
+        self.assertEqual(metadata["scope"], "per_pair_joint_percentile")
+        self.assertEqual(metadata["percentiles"], [1, 99])
+        self.assertLess(int(control_tile.max()), int(target_tile.min()))
 
 
 if __name__ == "__main__":

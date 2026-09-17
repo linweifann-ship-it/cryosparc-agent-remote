@@ -535,13 +535,122 @@ def _extract_particle_crop(
     return crop
 
 
+def select_typical_power_matched_controls(
+    targets: list[dict[str, Any]],
+    particle_uids: Any,
+    ncc_scores: np.ndarray,
+    power_scores: np.ndarray,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select P40-P60 controls by same-micrograph, then nearest-NCC matching only."""
+    particle_uids = [int(value) for value in particle_uids]
+    ncc_scores = np.asarray(ncc_scores, dtype=np.float64)
+    power_scores = np.asarray(power_scores, dtype=np.float64)
+    if not (len(particle_uids) == ncc_scores.size == power_scores.size):
+        raise ValueError("Particle UID, NCC Score, and Power Score arrays must have matching lengths.")
+    finite_power = power_scores[np.isfinite(power_scores)]
+    if finite_power.size == 0:
+        return [], {
+            "power_percentile_bin": "Typical P40-P60",
+            "error": "No finite Power Scores are available for matched controls.",
+        }
+    power_p40, power_p60 = (float(value) for value in np.percentile(finite_power, [40, 60]))
+    candidate_indices = np.flatnonzero(
+        np.isfinite(power_scores)
+        & np.isfinite(ncc_scores)
+        & (power_scores >= power_p40)
+        & (power_scores <= power_p60)
+    )
+    if candidate_indices.size == 0:
+        return [], {
+            "power_percentile_bin": "Typical P40-P60",
+            "power_bounds": {"P40": power_p40, "P60": power_p60},
+            "error": "No finite P40-P60 particles are available for matched controls.",
+        }
+    candidates_by_micrograph: dict[int, list[int]] = {}
+    for index in candidate_indices:
+        candidates_by_micrograph.setdefault(particle_uids[int(index)], []).append(int(index))
+
+    controls: list[dict[str, Any]] = []
+    same_micrograph_count = 0
+    for target in targets:
+        target_index = int(target["particle_index"])
+        target_uid = particle_uids[target_index]
+        same_micrograph_candidates = candidates_by_micrograph.get(target_uid, [])
+        if same_micrograph_candidates:
+            candidates = np.asarray(same_micrograph_candidates, dtype=np.int64)
+            matching_scope = "same_micrograph"
+            same_micrograph_count += 1
+        else:
+            candidates = candidate_indices
+            matching_scope = "global_fallback"
+        ncc_distance = np.abs(ncc_scores[candidates] - ncc_scores[target_index])
+        control_index = int(candidates[int(np.argmin(ncc_distance))])
+        controls.append({
+            "target_particle_index": target_index,
+            "particle_index": control_index,
+            "power_percentile_bin": "Typical P40-P60",
+            "matching_scope": matching_scope,
+            "ncc_difference": float(abs(ncc_scores[control_index] - ncc_scores[target_index])),
+        })
+    return controls, {
+        "power_percentile_bin": "Typical P40-P60",
+        "power_bounds": {"P40": power_p40, "P60": power_p60},
+        "candidate_particle_count": int(candidate_indices.size),
+        "same_micrograph_match_count": same_micrograph_count,
+        "global_fallback_match_count": len(controls) - same_micrograph_count,
+        "matching_priority": (
+            "same micrograph first; within that set select minimum absolute NCC difference; "
+            "use all P40-P60 particles only when the target micrograph has no control candidate"
+        ),
+        "visual_selection_used": False,
+    }
+
+
+def _normalize_particle_pair(
+    control_crop: np.ndarray,
+    target_crop: np.ndarray,
+    tile_size: int,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Jointly normalize a control/target pair so their grayscale scale is identical."""
+    control_crop = np.asarray(control_crop, dtype=np.float32)
+    target_crop = np.asarray(target_crop, dtype=np.float32)
+    finite_parts = [
+        values[np.isfinite(values)]
+        for values in (control_crop, target_crop)
+    ]
+    finite = np.concatenate([values for values in finite_parts if values.size]) if any(
+        values.size for values in finite_parts
+    ) else np.asarray([], dtype=np.float32)
+    if finite.size:
+        vmin, vmax = (float(value) for value in np.percentile(finite, [1, 99]))
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+    else:
+        vmin, vmax = 0.0, 1.0
+
+    def scale(crop: np.ndarray) -> np.ndarray:
+        image = np.nan_to_num(crop, nan=vmin, posinf=vmax, neginf=vmin)
+        scaled = np.clip((image - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+        tile = Image.fromarray(scaled, mode="L").resize(
+            (tile_size, tile_size), Image.Resampling.BILINEAR
+        )
+        return np.asarray(tile.convert("RGB"))
+
+    return scale(control_crop), scale(target_crop), {
+        "scope": "per_pair_joint_percentile",
+        "percentiles": [1, 99],
+        "vmin": vmin,
+        "vmax": vmax,
+    }
+
+
 def build_high_power_targeted_inspection(
     project: Any,
     project_uid: str,
     job_uid: str,
     mic_paths: list[Any],
     mic_uids: list[int],
-    particle_uids: np.ndarray,
+    particle_uids: Any,
     x_fraction: np.ndarray,
     y_fraction: np.ndarray,
     ncc_scores: np.ndarray,
@@ -550,66 +659,126 @@ def build_high_power_targeted_inspection(
     micrograph_root: str | None,
     samples_per_bin: int = 6,
     tile_size: int = 192,
-    columns: int = 5,
+    pairs_per_row: int = 3,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Render local crops for high-Power tail examples without selecting a threshold."""
-    selected, tail_bins = select_high_power_tail_particles(
+    """Render typical-control/high-Power pairs without selecting an upper threshold."""
+    targets, tail_bins = select_high_power_tail_particles(
         power_scores,
         particle_uids,
         samples_per_bin=samples_per_bin,
     )
+    controls, control_metadata = select_typical_power_matched_controls(
+        targets,
+        particle_uids,
+        ncc_scores,
+        power_scores,
+    )
+    controls_by_target = {
+        int(item["target_particle_index"]): item
+        for item in controls
+    }
     mic_index = {uid: index for index, uid in enumerate(mic_uids)}
     loaded_images: dict[int, np.ndarray] = {}
-    rendered: list[dict[str, Any]] = []
+    rendered_pairs: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    for item in selected:
-        particle_index = item["particle_index"]
-        micrograph_uid = int(particle_uids[particle_index])
+    particle_uids = [int(value) for value in particle_uids]
+
+    def load_particle_image(micrograph_uid: int) -> np.ndarray:
         if micrograph_uid not in mic_index:
-            failures.append({"particle_index": particle_index, "error": "unknown_micrograph_uid"})
+            raise ValueError("unknown_micrograph_uid")
+        if micrograph_uid not in loaded_images:
+            source_path = str(mic_paths[mic_index[micrograph_uid]])
+            loaded_images[micrograph_uid] = load_micrograph_image(
+                project,
+                source_path,
+                micrograph_root,
+            )
+        return loaded_images[micrograph_uid]
+
+    for target in targets:
+        target_index = int(target["particle_index"])
+        control = controls_by_target.get(target_index)
+        if control is None:
+            failures.append({"target_particle_index": target_index, "error": "no_matched_control"})
             continue
         try:
-            if micrograph_uid not in loaded_images:
-                source_path = str(mic_paths[mic_index[micrograph_uid]])
-                loaded_images[micrograph_uid] = load_micrograph_image(
-                    project,
-                    source_path,
-                    micrograph_root,
-                )
-            image = loaded_images[micrograph_uid]
-            crop_size = min(768, max(256, min(image.shape[-2:]) // 8))
-            crop = _extract_particle_crop(
-                image,
-                x_fraction[particle_index],
-                y_fraction[particle_index],
+            control_index = int(control["particle_index"])
+            target_uid = particle_uids[target_index]
+            control_uid = particle_uids[control_index]
+            target_image = load_particle_image(target_uid)
+            control_image = load_particle_image(control_uid)
+            crop_size = min(
+                768,
+                max(256, min(*target_image.shape[-2:], *control_image.shape[-2:]) // 8),
+            )
+            control_crop = _extract_particle_crop(
+                control_image,
+                x_fraction[control_index],
+                y_fraction[control_index],
                 crop_size,
             )
-            rendered.append({
-                **item,
-                "micrograph_uid": micrograph_uid,
-                "crop": normalize_micrograph_image(crop, tile_size),
+            target_crop = _extract_particle_crop(
+                target_image,
+                x_fraction[target_index],
+                y_fraction[target_index],
+                crop_size,
+            )
+            control_tile, target_tile, normalization = _normalize_particle_pair(
+                control_crop,
+                target_crop,
+                tile_size,
+            )
+            rendered_pairs.append({
+                "target": {
+                    **target,
+                    "micrograph_uid": target_uid,
+                    "power": float(power_scores[target_index]),
+                    "ncc_score": float(ncc_scores[target_index]),
+                    "tile": target_tile,
+                },
+                "control": {
+                    **control,
+                    "micrograph_uid": control_uid,
+                    "power": float(power_scores[control_index]),
+                    "ncc_score": float(ncc_scores[control_index]),
+                    "tile": control_tile,
+                },
                 "crop_size_px": crop_size,
-                "power": float(power_scores[particle_index]),
-                "ncc_score": float(ncc_scores[particle_index]),
+                "normalization": normalization,
             })
         except Exception as exc:  # Keep other tail evidence available if one MRC is unreadable.
-            failures.append({"particle_index": particle_index, "error": str(exc)})
+            failures.append({"target_particle_index": target_index, "error": str(exc)})
 
     metadata = {
+        "pairing_description": (
+            "Each group has a typical-Power matched control on the left and a high-Power target on "
+            "the right. Compare whether the target has particle morphology consistent with its control "
+            "or instead resembles background, contamination, or an aggregate. This image is evidence "
+            "only and does not require an upper Power threshold."
+        ),
         "selection_strategy": "power_percentile_tail_bins_then_micrograph_diverse_round_robin",
         "samples_per_tail_bin": samples_per_bin,
-        "requested_particle_count": len(selected),
-        "rendered_particle_count": len(rendered),
+        "requested_target_count": len(targets),
+        "rendered_pair_count": len(rendered_pairs),
+        "rendered_target_count": len(rendered_pairs),
         "tail_bins": tail_bins,
+        "typical_power_control": control_metadata,
+        "pair_normalization": {
+            "scope": "per_pair_joint_percentile",
+            "same_crop_size_px_within_pair": True,
+            "same_native_pixel_scale_within_pair": True,
+            "independent_percentile_stretch": False,
+        },
         "unavailable_particle_count": len(failures),
         "unavailable_examples": failures[:5],
         "threshold_recommendation": None,
     }
-    if not rendered:
-        return {"error": "No high-Power tail crops could be rendered."}, metadata
+    if not rendered_pairs:
+        return {"error": "No high-Power target/control pairs could be rendered."}, metadata
 
-    rows = math.ceil(len(rendered) / columns)
-    label_height = 44
+    rows = math.ceil(len(rendered_pairs) / pairs_per_row)
+    label_height = 50
+    columns = pairs_per_row * 2
     sheet = Image.new(
         "RGB",
         (columns * tile_size, rows * (tile_size + label_height)),
@@ -617,28 +786,55 @@ def build_high_power_targeted_inspection(
     )
     draw = ImageDraw.Draw(sheet)
     font = ImageFont.load_default()
-    for panel_index, item in enumerate(rendered):
-        row_index = panel_index // columns
-        column_index = panel_index % columns
-        x0 = column_index * tile_size
+    for pair_index, pair in enumerate(rendered_pairs):
+        row_index = pair_index // pairs_per_row
+        column_index = (pair_index % pairs_per_row) * 2
         y0 = row_index * (tile_size + label_height)
-        sheet.paste(Image.fromarray(item["crop"], mode="RGB"), (x0, y0 + label_height))
-        center = tile_size // 2
-        radius = max(8, tile_size // 9)
-        draw.ellipse(
-            (x0 + center - radius, y0 + label_height + center - radius,
-             x0 + center + radius, y0 + label_height + center + radius),
-            outline=(255, 50, 30),
-            width=2,
-        )
-        draw.rectangle((x0, y0, x0 + tile_size - 1, y0 + label_height - 1), fill="black")
-        draw.text((x0 + 4, y0 + 3), item["tail_bin"], fill="white", font=font)
-        draw.text(
-            (x0 + 4, y0 + 19),
-            f"Power={item['power']:.1f} NCC={item['ncc_score']:.3g}",
-            fill="white",
-            font=font,
-        )
+        for panel_offset, (role, item) in enumerate((
+            ("Typical", pair["control"]),
+            ("High", pair["target"]),
+        )):
+            x0 = (column_index + panel_offset) * tile_size
+            sheet.paste(Image.fromarray(item["tile"], mode="RGB"), (x0, y0 + label_height))
+            center = tile_size // 2
+            radius = max(8, tile_size // 9)
+            draw.ellipse(
+                (x0 + center - radius, y0 + label_height + center - radius,
+                 x0 + center + radius, y0 + label_height + center + radius),
+                outline=(255, 50, 30),
+                width=2,
+            )
+            draw.rectangle((x0, y0, x0 + tile_size - 1, y0 + label_height - 1), fill="black")
+            draw.text(
+                (x0 + 4, y0 + 3),
+                f"{role} {item['power_percentile_bin'] if role == 'Typical' else item['tail_bin']}",
+                fill="white", font=font,
+            )
+            draw.text(
+                (x0 + 4, y0 + 21),
+                f"Power={item['power']:.1f} NCC={item['ncc_score']:.3g}",
+                fill="white", font=font,
+            )
+
+    metadata["pairs"] = [
+        {
+            "target_particle_index": pair["target"]["particle_index"],
+            "target_micrograph_uid": pair["target"]["micrograph_uid"],
+            "target_power_percentile_bin": pair["target"]["tail_bin"],
+            "target_power": pair["target"]["power"],
+            "target_ncc_score": pair["target"]["ncc_score"],
+            "control_particle_index": pair["control"]["particle_index"],
+            "control_micrograph_uid": pair["control"]["micrograph_uid"],
+            "control_power_percentile_bin": pair["control"]["power_percentile_bin"],
+            "control_power": pair["control"]["power"],
+            "control_ncc_score": pair["control"]["ncc_score"],
+            "matching_scope": pair["control"]["matching_scope"],
+            "ncc_difference": pair["control"]["ncc_difference"],
+            "crop_size_px": pair["crop_size_px"],
+            "normalization": pair["normalization"],
+        }
+        for pair in rendered_pairs
+    ]
 
     artifact = _png_artifact(
         sheet,
@@ -646,9 +842,12 @@ def build_high_power_targeted_inspection(
     )
     artifact.update({
         "columns": columns,
+        "pairs_per_row": pairs_per_row,
         "tile_size": tile_size,
-        "label_format": "tail_bin; Power=<number> NCC=<number>",
-        "target_marker": "red circle at crop centre",
+        "layout": "each pair: left=Typical P40-P60 control, right=High-Power target",
+        "label_format": "role percentile_bin; Power=<number> NCC=<number>",
+        "target_marker": "one same-size red circle at the selected particle in each panel",
+        "normalization": "per-pair shared P1-P99 grayscale range",
     })
     return artifact, metadata
 
