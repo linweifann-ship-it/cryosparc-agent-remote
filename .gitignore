@@ -1,11 +1,15 @@
-.DS_Store
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
-logs/
-reports/
+# Runtime artifacts and regenerable caches
 runs/
+logs/
+**/__pycache__/
+*.py[cod]
+*.orig
+
+# Local environment, secrets, and editor state
+.env
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
+.DS_Store

@@ -1,0 +1,8 @@
+# Minimum runtime dependencies for the MCP/CryoSPARC server environment.
+# Versions recorded from the environment used for this 2026-09-15 snapshot.
+mcp==1.27.2
+cryosparc-tools==5.0.3
+pydantic==2.13.4
+
+# A local-model backend additionally needs torch, transformers, peft, and the
+# selected model/adapter; those versions must match the target GPU environment.

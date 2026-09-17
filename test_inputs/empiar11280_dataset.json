@@ -1,0 +1,47 @@
+{
+  "dataset_id": "EMPIAR-11280",
+  "empiar_id": "EMPIAR-11280",
+  "emdb_id": "EMD-24949",
+  "pdb_id": "7SAD",
+  "title": "Memantine-bound GluN1a-GluN2B NMDA receptors",
+  "resolution": [
+    3.96
+  ],
+  "input_type": "movie",
+  "macromolecules_type": "membrane protein; heterotetrameric GluN1a-GluN2B NMDA receptor",
+  "num_of_maps": 1,
+  "abstract": "Single-particle cryo-EM structure of memantine-bound rat GluN1a-GluN2B NMDA receptors. The reported overall resolution is 3.96 A, with higher local resolution around the channel blocker binding site.",
+  "dataset_parameter_facts": {
+    "pixel_size_A": 0.856,
+    "accelerating_voltage_kv": 300,
+    "total_exposure_dose_e_per_A2": 57.6,
+    "spherical_aberration_mm": 2.7,
+    "symmetry": "C1",
+    "detector": "GATAN K3 BioQuantum (6k x 4k)",
+    "frames_per_movie": 30,
+    "image_shape_pixels": [
+      4096,
+      5760
+    ],
+    "particle_count_used": 131384,
+    "parameter_provenance": {
+      "pixel_size_A": "EMD-24949/wwPDB validation depositor field",
+      "accelerating_voltage_kv": "EMD-24949/wwPDB validation depositor field",
+      "total_exposure_dose_e_per_A2": "EMD-24949/wwPDB validation depositor field",
+      "spherical_aberration_mm": "Not reported in the sources checked; do not infer as a fact"
+    }
+  },
+  "available_input_files": {
+    "movie_blob_paths": "/home/share/empiar/11280/data/*.tiff",
+    "file_count": 3657,
+    "total_size_bytes": 774585189046
+  },
+  "known_workflow_steps": null,
+  "test_policy": {
+    "use_full_dataset": true,
+    "initial_action_should_be_decided_by_model": true,
+    "do_not_guess_missing_cs": false,
+    "requires_user_confirmation_if_model_requests_missing_input": false,
+    "cs_default_approved_by_user": true
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "dataset_id": "EMPIAR-10846",
+  "empiar_id": "EMPIAR-10846",
+  "emdb_id": "EMD-11419",
+  "pdb_id": "6ZTL",
+  "title": "E. coli 70S-RNAP expressome complex in collided state with NusG",
+  "resolution": [3.5],
+  "input_type": "movie",
+  "macromolecules_type": "E. coli 70S-RNAP expressome complex with NusG and mRNA",
+  "num_of_maps": 1,
+  "abstract": "Cryo-EM structure of the E. coli 70S-RNAP expressome in a collided state, revealing structural coupling between transcription and translation.",
+  "dataset_parameter_facts": {
+    "pixel_size_A": 0.5375,
+    "accelerating_voltage_kv": 300,
+    "total_exposure_dose_e_per_A2": 42.0,
+    "spherical_aberration_mm": 2.7,
+    "detector": "GATAN K2 Summit",
+    "frames_per_movie": 41,
+    "image_shape_pixels": [7676, 7420],
+    "parameter_provenance": {
+      "pixel_size_A": "EMPIAR-10846 REST API",
+      "accelerating_voltage_kv": "EMD-11419 experimental metadata XML",
+      "total_exposure_dose_e_per_A2": "EMD-11419 experimental metadata XML",
+      "spherical_aberration_mm": "User-approved default value; the dataset-specific source does not report Cs"
+    }
+  },
+  "available_input_files": {
+    "movie_blob_paths": "/home/share/empiar/10846/data/*.tif",
+    "file_count": 7712,
+    "frames_per_movie": 41
+  },
+  "known_workflow_steps": null,
+  "test_policy": {
+    "use_full_dataset": true,
+    "initial_action_should_be_decided_by_model": true,
+    "do_not_guess_missing_cs": false,
+    "requires_user_confirmation_if_model_requests_missing_input": false,
+    "cs_default_approved_by_user": true
+  }
+}
