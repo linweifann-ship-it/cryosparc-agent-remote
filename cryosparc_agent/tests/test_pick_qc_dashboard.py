@@ -1,6 +1,9 @@
 """Offline tests for Inspect Picks Exposure Plot and Power Histogram evidence."""
 import io
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -10,6 +13,7 @@ from vision_inputs import (
     _normalize_particle_pair,
     build_pick_qc_dashboard,
     build_structured_pick_statistics,
+    load_micrograph_image,
     select_high_power_tail_particles,
     select_typical_power_matched_controls,
 )
@@ -150,6 +154,66 @@ class PickQcDashboardTests(unittest.TestCase):
         self.assertEqual(metadata["scope"], "per_pair_joint_percentile")
         self.assertEqual(metadata["percentiles"], [1, 99])
         self.assertLess(int(control_tile.max()), int(target_tile.min()))
+
+    def test_j46_exact_path_precedes_api_and_dataset_fallback(self):
+        class Project:
+            def download_mrc(self, _path):
+                raise AssertionError("API must not run when the J46 exact path is readable")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            exact_path = Path(temp_dir) / "j46_exact.mrc"
+            exact_path.touch()
+            with patch("vision_inputs._read_mrc_path", return_value=np.ones((4, 5))) as read:
+                image, metadata = load_micrograph_image(
+                    Project(), str(exact_path), temp_dir, micrograph_uid=123, return_metadata=True
+                )
+
+        self.assertEqual(image.shape, (4, 5))
+        read.assert_called_once_with(exact_path)
+        self.assertEqual(metadata["micrograph_uid"], 123)
+        self.assertEqual(metadata["selected_source_type"], "j46_exact")
+        self.assertEqual(metadata["actual_source_path_or_blob"], str(exact_path))
+        self.assertEqual(metadata["image_shape"], [4, 5])
+
+    def test_cryosparc_api_precedes_dataset_fallback_for_relative_j46_blob(self):
+        class Project:
+            def download_mrc(self, path):
+                self.path = path
+                return None, np.ones((6, 7))
+
+        project = Project()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "same_name.mrc").touch()
+            with patch("vision_inputs._read_mrc_path") as read:
+                image, metadata = load_micrograph_image(
+                    project, "J46/imported/same_name.mrc", temp_dir,
+                    micrograph_uid=456, return_metadata=True,
+                )
+
+        self.assertEqual(image.shape, (6, 7))
+        self.assertEqual(project.path, "J46/imported/same_name.mrc")
+        read.assert_not_called()
+        self.assertEqual(metadata["selected_source_type"], "cryosparc_api")
+        self.assertEqual(metadata["actual_source_path_or_blob"], "J46/imported/same_name.mrc")
+
+    def test_dataset_path_is_only_used_after_exact_and_api_fail(self):
+        class Project:
+            def download_mrc(self, _path):
+                raise RuntimeError("offline")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fallback_path = Path(temp_dir) / "fallback.mrc"
+            fallback_path.touch()
+            with patch("vision_inputs._read_mrc_path", return_value=np.ones((8, 9))) as read:
+                image, metadata = load_micrograph_image(
+                    Project(), "J46/imported/fallback.mrc", temp_dir,
+                    micrograph_uid=789, return_metadata=True,
+                )
+
+        self.assertEqual(image.shape, (8, 9))
+        read.assert_called_once_with(fallback_path)
+        self.assertEqual(metadata["selected_source_type"], "dataset_fallback")
+        self.assertTrue(metadata["preceding_source_errors"])
 
 
 if __name__ == "__main__":

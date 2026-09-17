@@ -678,12 +678,12 @@ def build_high_power_targeted_inspection(
         for item in controls
     }
     mic_index = {uid: index for index, uid in enumerate(mic_uids)}
-    loaded_images: dict[int, np.ndarray] = {}
+    loaded_images: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
     rendered_pairs: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     particle_uids = [int(value) for value in particle_uids]
 
-    def load_particle_image(micrograph_uid: int) -> np.ndarray:
+    def load_particle_image(micrograph_uid: int) -> tuple[np.ndarray, dict[str, Any]]:
         if micrograph_uid not in mic_index:
             raise ValueError("unknown_micrograph_uid")
         if micrograph_uid not in loaded_images:
@@ -692,6 +692,8 @@ def build_high_power_targeted_inspection(
                 project,
                 source_path,
                 micrograph_root,
+                micrograph_uid=micrograph_uid,
+                return_metadata=True,
             )
         return loaded_images[micrograph_uid]
 
@@ -705,8 +707,8 @@ def build_high_power_targeted_inspection(
             control_index = int(control["particle_index"])
             target_uid = particle_uids[target_index]
             control_uid = particle_uids[control_index]
-            target_image = load_particle_image(target_uid)
-            control_image = load_particle_image(control_uid)
+            target_image, target_image_source = load_particle_image(target_uid)
+            control_image, control_image_source = load_particle_image(control_uid)
             crop_size = min(
                 768,
                 max(256, min(*target_image.shape[-2:], *control_image.shape[-2:]) // 8),
@@ -745,6 +747,8 @@ def build_high_power_targeted_inspection(
                 },
                 "crop_size_px": crop_size,
                 "normalization": normalization,
+                "target_image_source": target_image_source,
+                "control_image_source": control_image_source,
             })
         except Exception as exc:  # Keep other tail evidence available if one MRC is unreadable.
             failures.append({"target_particle_index": target_index, "error": str(exc)})
@@ -832,6 +836,8 @@ def build_high_power_targeted_inspection(
             "ncc_difference": pair["control"]["ncc_difference"],
             "crop_size_px": pair["crop_size_px"],
             "normalization": pair["normalization"],
+            "target_image_source": pair["target_image_source"],
+            "control_image_source": pair["control_image_source"],
         }
         for pair in rendered_pairs
     ]
@@ -918,8 +924,15 @@ def build_pick_inspection_visual_context(
         x0 = col_index * tile_size
         y0 = row_index * (tile_size + label_height)
         source_path = str(mic_paths[mic_index[uid]])
+        source_image, image_source = load_micrograph_image(
+            project,
+            source_path,
+            micrograph_root,
+            micrograph_uid=uid,
+            return_metadata=True,
+        )
         image = normalize_micrograph_image(
-            load_micrograph_image(project, source_path, micrograph_root), tile_size
+            source_image, tile_size
         )
         sheet.paste(Image.fromarray(image, mode="RGB"), (x0, y0 + label_height))
         picks = by_uid[uid]
@@ -946,6 +959,7 @@ def build_pick_inspection_visual_context(
             "micrograph_id": panel_index,
             "micrograph_uid": uid,
             "source_path": source_path,
+            "image_source": image_source,
             "pick_count": len(by_uid[uid]),
             "overlay_count": len(picks),
             "ncc_score_mean": float(np.mean(scores)) if len(scores) else None,
@@ -1012,22 +1026,89 @@ def build_pick_inspection_visual_context(
     }
 
 
-def load_micrograph_image(project: Any, source_path: str, micrograph_root: str | None) -> np.ndarray:
-    """Load a micrograph from a shared root when possible, otherwise via API."""
-    candidates = []
-    if micrograph_root:
-        candidates.append(Path(micrograph_root) / Path(source_path).name)
-    if Path(source_path).is_absolute():
-        candidates.append(Path(source_path))
-    for path in candidates:
-        if path.exists():
-            from cryosparc.mrc import read
-            _, image = read(str(path))
-            image = np.asarray(image)
-            return image[0] if image.ndim == 3 else image
-    _, image = project.download_mrc(source_path)
+def _read_mrc_path(path: Path) -> np.ndarray:
+    """Read one local MRC and normalize its dimensionality to a single micrograph."""
+    from cryosparc.mrc import read
+
+    _, image = read(str(path))
     image = np.asarray(image)
     return image[0] if image.ndim == 3 else image
+
+
+def _image_source_metadata(
+    micrograph_uid: int | None,
+    source_type: str,
+    actual_source_path: str,
+    image: np.ndarray,
+) -> dict[str, Any]:
+    return {
+        "micrograph_uid": micrograph_uid,
+        "selected_source_type": source_type,
+        "actual_source_path_or_blob": actual_source_path,
+        "image_shape": [int(value) for value in image.shape[-2:]],
+    }
+
+
+def load_micrograph_image(
+    project: Any,
+    source_path: str,
+    micrograph_root: str | None,
+    *,
+    micrograph_uid: int | None = None,
+    return_metadata: bool = False,
+) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
+    """Load the J46-recorded micrograph before API or dataset fallbacks.
+
+    ``source_path`` must come from the row of the J46 ``micrographs`` output
+    identified by the particle's ``location/micrograph_uid``. A user dataset root
+    is deliberately the final fallback because its basename can identify a
+    different image than the exact blob used to produce the particle coordinates.
+    """
+    exact_path = Path(source_path)
+    errors: list[str] = []
+    if exact_path.is_absolute():
+        try:
+            if exact_path.exists():
+                image = _read_mrc_path(exact_path)
+                metadata = _image_source_metadata(
+                    micrograph_uid, "j46_exact", str(exact_path), image
+                )
+                return (image, metadata) if return_metadata else image
+            errors.append(f"J46 exact path does not exist: {exact_path}")
+        except Exception as exc:
+            errors.append(f"J46 exact path read failed: {exc}")
+    else:
+        errors.append(f"J46 exact path is project-relative and not directly readable: {source_path}")
+
+    try:
+        _, image = project.download_mrc(source_path)
+        image = np.asarray(image)
+        image = image[0] if image.ndim == 3 else image
+        metadata = _image_source_metadata(
+            micrograph_uid, "cryosparc_api", source_path, image
+        )
+        return (image, metadata) if return_metadata else image
+    except Exception as exc:
+        errors.append(f"CryoSPARC API read failed: {exc}")
+
+    if micrograph_root:
+        fallback_path = Path(micrograph_root) / exact_path.name
+        try:
+            if fallback_path.exists():
+                image = _read_mrc_path(fallback_path)
+                metadata = _image_source_metadata(
+                    micrograph_uid, "dataset_fallback", str(fallback_path), image
+                )
+                metadata["preceding_source_errors"] = errors
+                return (image, metadata) if return_metadata else image
+            errors.append(f"Dataset fallback does not exist: {fallback_path}")
+        except Exception as exc:
+            errors.append(f"Dataset fallback read failed: {exc}")
+
+    raise RuntimeError(
+        "Could not load the J46-recorded micrograph via exact path, CryoSPARC API, "
+        f"or dataset fallback for uid={micrograph_uid}: {'; '.join(errors)}"
+    )
 
 
 def normalize_micrograph_image(array: Any, size: int) -> np.ndarray:
