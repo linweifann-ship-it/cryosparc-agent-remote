@@ -90,7 +90,11 @@ def build_workflow_decision_prompt(
     ]
     if visual_context:
         artifact_names = (
-            ("pick_qc_dashboard", "contact_sheet")
+            (
+                "pick_qc_dashboard",
+                "contact_sheet",
+                "high_power_targeted_inspection",
+            )
             if visual_context.get("kind") == "pick_inspection"
             else ("contact_sheet",)
         )
@@ -110,12 +114,23 @@ def build_workflow_decision_prompt(
                 "noise, and view diversity. Use the labels exactly in selected_templates."
             ) if visual_context.get("kind") != "pick_inspection" else (
                 "Review the Pick QC dashboard before the micrograph contact sheet. The dashboard "
-                "contains an Exposure Plot and observed NCC Score × Power Score density, not a "
-                "threshold recommendation. Use only threshold fields exposed by the candidate schema."
+                "contains an Exposure Plot and observed NCC Score × Power Score density; the third "
+                "image contains targeted high-Power crops. Structured candidate upper-threshold rows "
+                "are sensitivity counts, not recommendations. Use only threshold fields exposed by "
+                "the candidate schema; an optional upper bound may be omitted or null."
+            ),
+            "structured_pick_statistics": (
+                visual_context.get("structured_pick_statistics")
+                if visual_context.get("kind") == "pick_inspection" else None
             ),
             "visual_context": {
                 key: value for key, value in visual_context.items()
-                if key not in {"contact_sheet", "pick_qc_dashboard"}
+                if key not in {
+                    "contact_sheet",
+                    "pick_qc_dashboard",
+                    "high_power_targeted_inspection",
+                    "structured_pick_statistics",
+                }
             },
             "visual_attachment_status": attachment_status,
             "visual_attachment_fallback": (

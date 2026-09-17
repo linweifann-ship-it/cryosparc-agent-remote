@@ -53,13 +53,7 @@ def adapt_v2_decision_to_internal(
                     "action_type": candidate["action_type"],
                     "workflow_node_id": candidate["workflow_node_id"],
                     "job_type": candidate["job_type"],
-                    "parameters": {
-                        **normalize_registry_defaults(
-                            candidate.get("default_parameters") or {},
-                            candidate.get("parameter_template") or {},
-                        ),
-                        **(requested.get("parameters") or {}),
-                    },
+                    "parameters": merge_candidate_parameters(candidate, requested),
                     "connections": requested.get("connections"),
                 }
             )
@@ -100,6 +94,27 @@ def adapt_v2_decision_to_internal(
             "evidence": v2_decision.get("evidence") or [],
             "requested_inputs": v2_decision.get("requested_inputs") or [],
         },
+    }
+
+
+def merge_candidate_parameters(
+    candidate: dict[str, Any],
+    requested: dict[str, Any],
+) -> dict[str, Any]:
+    """Treat null optional overrides as omitted, while keeping null required values visible."""
+    parameter_template = candidate.get("parameter_template") or {}
+    requested_parameters = requested.get("parameters") or {}
+    effective_overrides = {
+        name: value
+        for name, value in requested_parameters.items()
+        if value is not None or bool((parameter_template.get(name) or {}).get("required"))
+    }
+    return {
+        **normalize_registry_defaults(
+            candidate.get("default_parameters") or {},
+            parameter_template,
+        ),
+        **effective_overrides,
     }
 
 

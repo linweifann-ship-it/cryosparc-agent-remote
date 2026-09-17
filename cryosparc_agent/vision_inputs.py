@@ -147,6 +147,170 @@ def _summary(values: np.ndarray) -> dict[str, Any]:
     return result
 
 
+PICK_STAT_PERCENTILES = (0.5, 1, 5, 25, 50, 75, 90, 95, 97.5, 99, 99.5)
+
+
+def _pick_quantiles(values: np.ndarray) -> dict[str, float | None]:
+    """Return the complete fixed percentile table used as Model evidence."""
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return {f"P{percentile:g}": None for percentile in PICK_STAT_PERCENTILES}
+    quantiles = np.percentile(finite, PICK_STAT_PERCENTILES)
+    return {
+        f"P{percentile:g}": float(value)
+        for percentile, value in zip(PICK_STAT_PERCENTILES, quantiles)
+    }
+
+
+def _power_tail_bins(power_scores: np.ndarray) -> list[dict[str, Any]]:
+    """Describe fixed percentile tail intervals without treating any as a cutoff."""
+    power_scores = np.asarray(power_scores, dtype=np.float64)
+    finite = power_scores[np.isfinite(power_scores)]
+    if finite.size == 0:
+        return []
+    percentile_values = _pick_quantiles(finite)
+    definitions = (
+        ("P95-P97.5", "P95", "P97.5"),
+        ("P97.5-P99", "P97.5", "P99"),
+        ("P99-P99.5", "P99", "P99.5"),
+        (">P99.5", "P99.5", None),
+    )
+    records = []
+    for label, lower_key, upper_key in definitions:
+        lower = percentile_values[lower_key]
+        upper = percentile_values.get(upper_key) if upper_key else None
+        mask = np.isfinite(power_scores) & (power_scores >= lower)
+        if upper is not None:
+            mask &= power_scores < upper
+        records.append({
+            "label": label,
+            "lower_percentile": lower_key,
+            "upper_percentile": upper_key,
+            "lower_bound": lower,
+            "upper_bound": upper,
+            "particle_count": int(np.count_nonzero(mask)),
+        })
+    return records
+
+
+def _candidate_upper_thresholds(power_scores: np.ndarray) -> list[dict[str, Any]]:
+    """Report percentile-derived upper-bound sensitivity counts, never a recommendation."""
+    power_scores = np.asarray(power_scores, dtype=np.float64)
+    finite = power_scores[np.isfinite(power_scores)]
+    if finite.size == 0:
+        return []
+    candidates = []
+    for percentile in (90, 95, 97.5, 99, 99.5):
+        threshold = float(np.percentile(finite, percentile))
+        retained = int(np.count_nonzero(finite < threshold))
+        removed = int(finite.size - retained)
+        candidates.append({
+            "derived_from_power_percentile": f"P{percentile:g}",
+            "lpower_thresh_max": threshold,
+            "comparison": "power < lpower_thresh_max",
+            "population": "finite_power_particles",
+            "population_count": int(finite.size),
+            "retained_count": retained,
+            "retained_fraction": retained / finite.size,
+            "removed_high_power_count": removed,
+            "removed_high_power_fraction": removed / finite.size,
+            "threshold_recommendation": None,
+        })
+    return candidates
+
+
+def build_structured_pick_statistics(
+    particle_count: int,
+    ncc_scores: np.ndarray,
+    power_scores: np.ndarray,
+    histogram_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Build compact full-population evidence for an Inspect Picks Model input."""
+    ncc_scores = np.asarray(ncc_scores, dtype=np.float64)
+    power_scores = np.asarray(power_scores, dtype=np.float64)
+    valid_pairs = np.isfinite(ncc_scores) & np.isfinite(power_scores)
+    finite_power_count = int(np.count_nonzero(np.isfinite(power_scores)))
+    return {
+        "particle_count": int(particle_count),
+        "valid_ncc_power_pair_count": int(np.count_nonzero(valid_pairs)),
+        "ncc_quantiles": _pick_quantiles(ncc_scores),
+        "power_quantiles": _pick_quantiles(power_scores),
+        "histogram": {
+            "ncc_power": histogram_metadata,
+            "power_tail_bins": _power_tail_bins(power_scores),
+            "finite_power_count": finite_power_count,
+            "nonfinite_power_count": int(power_scores.size - finite_power_count),
+        },
+        "candidate_upper_thresholds": _candidate_upper_thresholds(power_scores),
+        "threshold_recommendation": None,
+    }
+
+
+def _select_diverse_tail_indices(
+    candidate_indices: np.ndarray,
+    particle_uids: Any,
+    maximum: int,
+) -> list[int]:
+    """Select tail examples across micrographs before taking a second pick from any one."""
+    grouped: dict[int, list[int]] = {}
+    for index in candidate_indices.tolist():
+        grouped.setdefault(int(particle_uids[index]), []).append(int(index))
+    if not grouped or maximum <= 0:
+        return []
+    uids = sorted(grouped)
+    if len(uids) > maximum:
+        sampled_positions = np.linspace(0, len(uids) - 1, maximum).round().astype(int)
+        uids = [uids[position] for position in sorted(set(sampled_positions))]
+    selected: list[int] = []
+    cursor = 0
+    while len(selected) < maximum:
+        added = False
+        for uid in uids:
+            picks = grouped[uid]
+            if cursor < len(picks):
+                selected.append(picks[cursor])
+                added = True
+                if len(selected) == maximum:
+                    break
+        if not added:
+            break
+        cursor += 1
+    return selected
+
+
+def select_high_power_tail_particles(
+    power_scores: np.ndarray,
+    particle_uids: Any,
+    samples_per_bin: int = 6,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select approximately 24 high-Power particle crops with micrograph diversity."""
+    power_scores = np.asarray(power_scores, dtype=np.float64)
+    # CryoSPARC UIDs are unsigned 64-bit values. Keep Python ints: converting a
+    # mixed high-bit UID collection with np.asarray can silently produce float64
+    # and lose the bits required to locate the source micrograph.
+    particle_uids = [int(value) for value in particle_uids]
+    if power_scores.size != len(particle_uids):
+        raise ValueError("Power Score and micrograph UID arrays must have matching lengths.")
+    tail_bins = _power_tail_bins(power_scores)
+    selected: list[dict[str, Any]] = []
+    for tail_bin in tail_bins:
+        lower = tail_bin["lower_bound"]
+        upper = tail_bin["upper_bound"]
+        mask = np.isfinite(power_scores) & (power_scores >= lower)
+        if upper is not None:
+            mask &= power_scores < upper
+        indices = np.flatnonzero(mask)
+        chosen = _select_diverse_tail_indices(indices, particle_uids, samples_per_bin)
+        selected.extend({
+            "particle_index": index,
+            "tail_bin": tail_bin["label"],
+        } for index in chosen)
+        tail_bin["selected_particle_count"] = len(chosen)
+        tail_bin["selected_micrograph_count"] = len({int(particle_uids[index]) for index in chosen})
+    return selected, tail_bins
+
+
 def _display_bounds(values: np.ndarray) -> tuple[float, float]:
     """Choose a robust chart viewport while retaining the full range in metadata."""
     finite = np.asarray(values, dtype=np.float64)
@@ -334,11 +498,158 @@ def build_pick_qc_dashboard(
     }
 
 
+def _extract_particle_crop(
+    image: np.ndarray,
+    x_fraction: float,
+    y_fraction: float,
+    crop_size: int,
+) -> np.ndarray:
+    """Extract a fixed-size crop centred on one particle, padding edges with its median."""
+    image = np.asarray(image, dtype=np.float32)
+    height, width = image.shape[-2:]
+    finite = image[np.isfinite(image)]
+    fill_value = float(np.median(finite)) if finite.size else 0.0
+    crop = np.full((crop_size, crop_size), fill_value, dtype=np.float32)
+    center_x = round(float(x_fraction) * (width - 1))
+    center_y = round(float(y_fraction) * (height - 1))
+    half = crop_size // 2
+    source_left = max(0, center_x - half)
+    source_top = max(0, center_y - half)
+    source_right = min(width, source_left + crop_size)
+    source_bottom = min(height, source_top + crop_size)
+    destination_left = max(0, half - center_x)
+    destination_top = max(0, half - center_y)
+    destination_right = destination_left + (source_right - source_left)
+    destination_bottom = destination_top + (source_bottom - source_top)
+    crop[destination_top:destination_bottom, destination_left:destination_right] = (
+        image[source_top:source_bottom, source_left:source_right]
+    )
+    return crop
+
+
+def build_high_power_targeted_inspection(
+    project: Any,
+    project_uid: str,
+    job_uid: str,
+    mic_paths: list[Any],
+    mic_uids: list[int],
+    particle_uids: np.ndarray,
+    x_fraction: np.ndarray,
+    y_fraction: np.ndarray,
+    ncc_scores: np.ndarray,
+    power_scores: np.ndarray,
+    cache_dir: Path,
+    micrograph_root: str | None,
+    samples_per_bin: int = 6,
+    tile_size: int = 192,
+    columns: int = 5,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Render local crops for high-Power tail examples without selecting a threshold."""
+    selected, tail_bins = select_high_power_tail_particles(
+        power_scores,
+        particle_uids,
+        samples_per_bin=samples_per_bin,
+    )
+    mic_index = {uid: index for index, uid in enumerate(mic_uids)}
+    loaded_images: dict[int, np.ndarray] = {}
+    rendered: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for item in selected:
+        particle_index = item["particle_index"]
+        micrograph_uid = int(particle_uids[particle_index])
+        if micrograph_uid not in mic_index:
+            failures.append({"particle_index": particle_index, "error": "unknown_micrograph_uid"})
+            continue
+        try:
+            if micrograph_uid not in loaded_images:
+                source_path = str(mic_paths[mic_index[micrograph_uid]])
+                loaded_images[micrograph_uid] = load_micrograph_image(
+                    project,
+                    source_path,
+                    micrograph_root,
+                )
+            image = loaded_images[micrograph_uid]
+            crop_size = min(768, max(256, min(image.shape[-2:]) // 8))
+            crop = _extract_particle_crop(
+                image,
+                x_fraction[particle_index],
+                y_fraction[particle_index],
+                crop_size,
+            )
+            rendered.append({
+                **item,
+                "micrograph_uid": micrograph_uid,
+                "crop": normalize_micrograph_image(crop, tile_size),
+                "crop_size_px": crop_size,
+                "power": float(power_scores[particle_index]),
+                "ncc_score": float(ncc_scores[particle_index]),
+            })
+        except Exception as exc:  # Keep other tail evidence available if one MRC is unreadable.
+            failures.append({"particle_index": particle_index, "error": str(exc)})
+
+    metadata = {
+        "selection_strategy": "power_percentile_tail_bins_then_micrograph_diverse_round_robin",
+        "samples_per_tail_bin": samples_per_bin,
+        "requested_particle_count": len(selected),
+        "rendered_particle_count": len(rendered),
+        "tail_bins": tail_bins,
+        "unavailable_particle_count": len(failures),
+        "unavailable_examples": failures[:5],
+        "threshold_recommendation": None,
+    }
+    if not rendered:
+        return {"error": "No high-Power tail crops could be rendered."}, metadata
+
+    rows = math.ceil(len(rendered) / columns)
+    label_height = 44
+    sheet = Image.new(
+        "RGB",
+        (columns * tile_size, rows * (tile_size + label_height)),
+        "white",
+    )
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for panel_index, item in enumerate(rendered):
+        row_index = panel_index // columns
+        column_index = panel_index % columns
+        x0 = column_index * tile_size
+        y0 = row_index * (tile_size + label_height)
+        sheet.paste(Image.fromarray(item["crop"], mode="RGB"), (x0, y0 + label_height))
+        center = tile_size // 2
+        radius = max(8, tile_size // 9)
+        draw.ellipse(
+            (x0 + center - radius, y0 + label_height + center - radius,
+             x0 + center + radius, y0 + label_height + center + radius),
+            outline=(255, 50, 30),
+            width=2,
+        )
+        draw.rectangle((x0, y0, x0 + tile_size - 1, y0 + label_height - 1), fill="black")
+        draw.text((x0 + 4, y0 + 3), item["tail_bin"], fill="white", font=font)
+        draw.text(
+            (x0 + 4, y0 + 19),
+            f"Power={item['power']:.1f} NCC={item['ncc_score']:.3g}",
+            fill="white",
+            font=font,
+        )
+
+    artifact = _png_artifact(
+        sheet,
+        cache_dir / f"{project_uid}_{job_uid}_high_power_targeted_inspection.png",
+    )
+    artifact.update({
+        "columns": columns,
+        "tile_size": tile_size,
+        "label_format": "tail_bin; Power=<number> NCC=<number>",
+        "target_marker": "red circle at crop centre",
+    })
+    return artifact, metadata
+
+
 
 def build_pick_inspection_visual_context(
     project_uid: str,
     job_uid: str,
-    max_micrographs: int = 8,
+    max_micrographs: int = 9,
     max_picks_per_micrograph: int = 400,
     tile_size: int = 512,
     micrograph_root: str | None = None,
@@ -375,6 +686,12 @@ def build_pick_inspection_visual_context(
         "panels": ["exposure_plot", "power_histogram"],
         "layout": "top=exposure_plot,bottom=power_histogram",
     })
+    structured_pick_statistics = build_structured_pick_statistics(
+        particle_count=len(particle_uids),
+        ncc_scores=ncc,
+        power_scores=power,
+        histogram_metadata=dashboard_metadata["power_histogram"],
+    )
     # Cover the whole pick-count range instead of selecting only the densest images.
     ranked_mics = sorted(by_uid, key=lambda uid: len(by_uid[uid]))
     sample_count = max(1, min(max_micrographs, len(ranked_mics)))
@@ -436,6 +753,20 @@ def build_pick_inspection_visual_context(
         "tile_size": tile_size,
         "label_format": "micrograph_id=<integer> uid=<integer> picks=<integer>",
     })
+    high_power_artifact, high_power_metadata = build_high_power_targeted_inspection(
+        project=project,
+        project_uid=project_uid,
+        job_uid=job_uid,
+        mic_paths=mic_paths,
+        mic_uids=mic_uids,
+        particle_uids=particle_uids,
+        x_fraction=x_frac,
+        y_fraction=y_frac,
+        ncc_scores=ncc,
+        power_scores=power,
+        cache_dir=cache_dir,
+        micrograph_root=micrograph_root,
+    )
 
     micrograph_flags = list(micrographs.get("micrograph_blob/is_background_subtracted", []))
     input_is_denoised = bool(micrograph_flags) and all(bool(value) for value in micrograph_flags)
@@ -448,8 +779,11 @@ def build_pick_inspection_visual_context(
         "representative_sampling": "pick_count_quantiles",
         "panels": panels,
         "score_statistics": {"ncc_score": _summary(ncc), "power": _summary(power)},
+        "structured_pick_statistics": structured_pick_statistics,
         "exposure_plot": dashboard_metadata["exposure_plot"],
         "power_histogram": dashboard_metadata["power_histogram"],
+        "high_power_targeted_inspection": high_power_artifact,
+        "high_power_targeted_inspection_metadata": high_power_metadata,
         "input_is_denoised": input_is_denoised,
         "auto_cluster_supported": input_is_denoised,
         "auto_cluster_warning": (

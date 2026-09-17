@@ -237,7 +237,7 @@ def get_pick_inspection_visual_context(
     max_picks_per_micrograph: int = 400,
     micrograph_root: str | None = None,
 ) -> dict:
-    """Return micrograph thumbnails with Blob Picker locations overlaid."""
+    """Return pick statistics, QC plots, representative overlays, and high-Power tail crops."""
     return build_pick_inspection_visual_context(
         project_uid=project_uid,
         job_uid=job_uid,

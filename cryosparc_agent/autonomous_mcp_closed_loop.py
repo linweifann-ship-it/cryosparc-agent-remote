@@ -414,7 +414,7 @@ async def main_async() -> None:
                         {
                             "project_uid": args.project,
                             "job_uid": current_node,
-                            "max_micrographs": 8,
+                            "max_micrographs": 9,
                             "max_picks_per_micrograph": 600,
                             "micrograph_root": micrograph_root,
                         },
@@ -429,7 +429,11 @@ async def main_async() -> None:
                         "class_ids": visual_context.get("class_ids"),
                         "artifacts": {
                             name: (visual_context.get(name) or {}).get("local_path")
-                            for name in ("pick_qc_dashboard", "contact_sheet")
+                            for name in (
+                                "pick_qc_dashboard",
+                                "contact_sheet",
+                                "high_power_targeted_inspection",
+                            )
                             if (visual_context.get(name) or {}).get("local_path")
                         },
                     }
@@ -813,7 +817,11 @@ def build_autonomous_prompt(
                     })
         else:
             artifact_names = (
-                ("pick_qc_dashboard", "contact_sheet")
+                (
+                    "pick_qc_dashboard",
+                    "contact_sheet",
+                    "high_power_targeted_inspection",
+                )
                 if visual_context.get("kind") == "pick_inspection"
                 else ("contact_sheet",)
             )
@@ -842,19 +850,28 @@ def build_autonomous_prompt(
                             "Review this class-average contact sheet for Select 2D. Every tile is "
                             "labelled class_id=<integer>. Select clear, consistent particle views."
                         ) if visual_context.get("kind") == "class_average" else (
-                            "Review the Pick QC dashboard first, then the micrograph contact sheet for "
-                            "Inspect Picks. The dashboard's upper panel shows picked-particle count by "
-                            "micrograph index; its lower panel shows observed NCC Score × Power Score "
-                            "density. The contact sheet shows red Blob Picker circles on representative "
-                            "micrographs. Use this evidence to assess whether an explicit lower or upper "
-                            "threshold is scientifically supported; the dashboard never recommends a "
-                            "cutoff. Only use parameter fields present in the candidate schema, never "
-                            "invent an upper-threshold field. Prefer explicit NCC/Power thresholds; do "
-                            "not use auto clustering unless input_is_denoised is true."
+                            "Start with Structured pick statistics. Candidate upper-threshold rows are "
+                            "observed retain/remove sensitivity counts, never a recommendation. Then "
+                            "review the Pick QC dashboard, representative micrograph contact sheet, and "
+                            "high-Power targeted crops for Inspect Picks. Use this evidence to assess "
+                            "whether an explicit lower or upper threshold is scientifically supported. "
+                            "Only use parameter fields present in the candidate schema; an optional "
+                            "lpower_thresh_max may be omitted or null when no upper threshold is "
+                            "supported. Prefer explicit NCC/Power thresholds; do not use auto clustering "
+                            "unless input_is_denoised is true."
+                        ),
+                        "structured_pick_statistics": (
+                            visual_context.get("structured_pick_statistics")
+                            if visual_context.get("kind") == "pick_inspection" else None
                         ),
                         "visual_context": {
                             key: value for key, value in visual_context.items()
-                            if key not in {"contact_sheet", "pick_qc_dashboard"}
+                            if key not in {
+                                "contact_sheet",
+                                "pick_qc_dashboard",
+                                "high_power_targeted_inspection",
+                                "structured_pick_statistics",
+                            }
                         },
                         "visual_attachment_status": attachment_status,
                         "visual_attachment_fallback": (

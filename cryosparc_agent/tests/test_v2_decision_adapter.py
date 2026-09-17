@@ -108,6 +108,31 @@ class V2DecisionAdapterTests(unittest.TestCase):
         self.assertEqual(action["action_id"], "forward_J9")
         self.assertEqual(action["job_type"], "class_2D_new")
 
+    def test_optional_null_upper_power_bound_is_treated_as_unset(self):
+        candidate = {
+            "action_id": "registry_J46_inspect_picks_v2",
+            "action_type": "forward",
+            "workflow_node_id": "J46:inspect_picks_v2",
+            "job_type": "inspect_picks_v2",
+            "default_parameters": {"calibrate_pow": 1},
+            "parameter_template": {
+                "lpower_thresh_max": {"type": "number"},
+                "lpower_thresh_min": {"type": "number"},
+            },
+        }
+        decision = {
+            "decision_type": "forward",
+            "action": "inspect_picks_v2",
+            "parameters": {"lpower_thresh_min": 450, "lpower_thresh_max": None},
+        }
+
+        result = adapt_v2_decision_to_internal(decision, [candidate])
+
+        self.assertTrue(result["success"])
+        parameters = result["internal_decision"]["selected_actions"][0]["parameters"]
+        self.assertEqual(parameters["lpower_thresh_min"], 450)
+        self.assertNotIn("lpower_thresh_max", parameters)
+
     def test_unknown_v2_action_becomes_generic_plan(self):
         decision = v2_forward_decision()
         decision["action"] = "unknown_future_job"
