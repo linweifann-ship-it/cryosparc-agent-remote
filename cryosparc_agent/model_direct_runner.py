@@ -89,29 +89,47 @@ def build_workflow_decision_prompt(
         {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
     ]
     if visual_context:
-        sheet = visual_context.get("contact_sheet") or {}
-        image_url = sheet.get("data_url") if isinstance(sheet, dict) else None
-        image_available = isinstance(image_url, str) and bool(image_url)
+        artifact_names = (
+            ("pick_qc_dashboard", "contact_sheet")
+            if visual_context.get("kind") == "pick_inspection"
+            else ("contact_sheet",)
+        )
+        artifacts = {name: visual_context.get(name) or {} for name in artifact_names}
+        attachment_status = {
+            name: (
+                "available"
+                if isinstance(artifact.get("data_url"), str) and artifact["data_url"]
+                else "unavailable"
+            )
+            for name, artifact in artifacts.items()
+        }
         visual_text = {
             "visual_instruction": (
                 "The attached image is a class-average contact sheet. Each tile is labelled "
                 "class_id=<integer>. Inspect particle quality, structural consistency, "
                 "noise, and view diversity. Use the labels exactly in selected_templates."
+            ) if visual_context.get("kind") != "pick_inspection" else (
+                "Review the Pick QC dashboard before the micrograph contact sheet. The dashboard "
+                "contains an Exposure Plot and observed NCC Score × Power Score density, not a "
+                "threshold recommendation. Use only threshold fields exposed by the candidate schema."
             ),
             "visual_context": {
                 key: value for key, value in visual_context.items()
-                if key != "contact_sheet"
+                if key not in {"contact_sheet", "pick_qc_dashboard"}
             },
-            "visual_attachment_status": (
-                "available" if image_available else
-                "unavailable; make the decision from the structured state without requesting human input solely for the missing image"
+            "visual_attachment_status": attachment_status,
+            "visual_attachment_fallback": (
+                "Make the decision from the structured state without requesting human input solely "
+                "for an unavailable image."
             ),
         }
         content: List[Dict[str, Any]] = [
             {"type": "text", "text": json.dumps(visual_text, ensure_ascii=False)},
         ]
-        if image_available:
-            content.append({"type": "image_url", "image_url": {"url": image_url}})
+        for artifact in artifacts.values():
+            image_url = artifact.get("data_url") if isinstance(artifact, dict) else None
+            if isinstance(image_url, str) and image_url:
+                content.append({"type": "image_url", "image_url": {"url": image_url}})
         messages.append({"role": "user", "content": content})
     return messages
 

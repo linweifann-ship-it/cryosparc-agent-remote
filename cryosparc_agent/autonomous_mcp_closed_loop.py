@@ -427,7 +427,11 @@ async def main_async() -> None:
                         "source": visual_context.get("source"),
                         "image_count": visual_context.get("image_count"),
                         "class_ids": visual_context.get("class_ids"),
-                        "local_path": (visual_context.get("contact_sheet") or {}).get("local_path"),
+                        "artifacts": {
+                            name: (visual_context.get(name) or {}).get("local_path")
+                            for name in ("pick_qc_dashboard", "contact_sheet")
+                            if (visual_context.get(name) or {}).get("local_path")
+                        },
                     }
             messages = build_autonomous_prompt(
                 model_input=model_input,
@@ -808,9 +812,28 @@ def build_autonomous_prompt(
                         "image_url": {"url": sheet["data_url"]},
                     })
         else:
-            sheet = visual_context.get("contact_sheet") or {}
-            image_url = sheet.get("data_url") if isinstance(sheet, dict) else None
-            image_available = isinstance(image_url, str) and bool(image_url)
+            artifact_names = (
+                ("pick_qc_dashboard", "contact_sheet")
+                if visual_context.get("kind") == "pick_inspection"
+                else ("contact_sheet",)
+            )
+            artifacts = {
+                name: visual_context.get(name) or {}
+                for name in artifact_names
+            }
+            attachment_status = {
+                name: (
+                    "available"
+                    if isinstance(artifact.get("data_url"), str) and artifact["data_url"]
+                    else "unavailable"
+                )
+                for name, artifact in artifacts.items()
+            }
+            image_artifacts = [
+                (name, artifact["data_url"])
+                for name, artifact in artifacts.items()
+                if attachment_status[name] == "available"
+            ]
             content = [
                 {
                     "type": "text",
@@ -819,21 +842,33 @@ def build_autonomous_prompt(
                             "Review this class-average contact sheet for Select 2D. Every tile is "
                             "labelled class_id=<integer>. Select clear, consistent particle views."
                         ) if visual_context.get("kind") == "class_average" else (
-                            "Review this micrograph contact sheet for Inspect Picks. Red circles mark "
-                            "Blob Picker locations. Preserve high NCC/Power bright-region picks and "
-                            "remove only the low-score dark/background tail. Prefer explicit NCC/Power "
-                            "thresholds; do not use auto clustering unless input_is_denoised is true."
+                            "Review the Pick QC dashboard first, then the micrograph contact sheet for "
+                            "Inspect Picks. The dashboard's upper panel shows picked-particle count by "
+                            "micrograph index; its lower panel shows observed NCC Score × Power Score "
+                            "density. The contact sheet shows red Blob Picker circles on representative "
+                            "micrographs. Use this evidence to assess whether an explicit lower or upper "
+                            "threshold is scientifically supported; the dashboard never recommends a "
+                            "cutoff. Only use parameter fields present in the candidate schema, never "
+                            "invent an upper-threshold field. Prefer explicit NCC/Power thresholds; do "
+                            "not use auto clustering unless input_is_denoised is true."
                         ),
-                        "visual_context": {key: value for key, value in visual_context.items() if key != "contact_sheet"},
-                        "visual_attachment_status": (
-                            "available" if image_available else
-                            "unavailable; continue from structured state and candidate evidence without requesting human input solely for the missing overlay"
+                        "visual_context": {
+                            key: value for key, value in visual_context.items()
+                            if key not in {"contact_sheet", "pick_qc_dashboard"}
+                        },
+                        "visual_attachment_status": attachment_status,
+                        "visual_attachment_fallback": (
+                            "Continue from structured state and candidate evidence without requesting "
+                            "human input solely because a visual artifact is unavailable."
                         ),
                     }, ensure_ascii=False),
                 },
             ]
-            if image_available:
-                content.append({"type": "image_url", "image_url": {"url": image_url}})
+            for _name, image_url in image_artifacts:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": image_url},
+                })
         messages.append({"role": "user", "content": content})
     return messages
 
