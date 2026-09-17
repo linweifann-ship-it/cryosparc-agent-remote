@@ -513,17 +513,25 @@ def _extract_particle_crop(
     center_x = round(float(x_fraction) * (width - 1))
     center_y = round(float(y_fraction) * (height - 1))
     half = crop_size // 2
-    source_left = max(0, center_x - half)
-    source_top = max(0, center_y - half)
-    source_right = min(width, source_left + crop_size)
-    source_bottom = min(height, source_top + crop_size)
-    destination_left = max(0, half - center_x)
-    destination_top = max(0, half - center_y)
+    # Compute source and destination bounds from the same unclipped window.
+    # Some CryoSPARC fractional locations sit just outside [0, 1] at an edge;
+    # retain a fixed-size, median-padded crop instead of dropping that example.
+    raw_left = center_x - half
+    raw_top = center_y - half
+    raw_right = raw_left + crop_size
+    raw_bottom = raw_top + crop_size
+    source_left = max(0, raw_left)
+    source_top = max(0, raw_top)
+    source_right = min(width, raw_right)
+    source_bottom = min(height, raw_bottom)
+    destination_left = source_left - raw_left
+    destination_top = source_top - raw_top
     destination_right = destination_left + (source_right - source_left)
     destination_bottom = destination_top + (source_bottom - source_top)
-    crop[destination_top:destination_bottom, destination_left:destination_right] = (
-        image[source_top:source_bottom, source_left:source_right]
-    )
+    if source_left < source_right and source_top < source_bottom:
+        crop[destination_top:destination_bottom, destination_left:destination_right] = (
+            image[source_top:source_bottom, source_left:source_right]
+        )
     return crop
 
 

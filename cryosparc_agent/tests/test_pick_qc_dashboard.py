@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 
 from vision_inputs import (
+    _extract_particle_crop,
     build_pick_qc_dashboard,
     build_structured_pick_statistics,
     select_high_power_tail_particles,
@@ -107,6 +108,14 @@ class PickQcDashboardTests(unittest.TestCase):
             high_bit_uids[item["particle_index"]] >= 2**63
             for item in selected
         ))
+
+    def test_edge_outside_fraction_produces_fixed_size_padded_crop(self):
+        image = np.arange(16, dtype=np.float32).reshape(4, 4)
+
+        for x_fraction, y_fraction in ((-0.2, 0.5), (1.2, 0.5), (0.5, -0.2), (0.5, 1.2)):
+            crop = _extract_particle_crop(image, x_fraction, y_fraction, crop_size=4)
+            self.assertEqual(crop.shape, (4, 4))
+            self.assertTrue(np.isfinite(crop).all())
 
 
 if __name__ == "__main__":
